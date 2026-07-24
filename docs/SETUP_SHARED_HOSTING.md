@@ -37,16 +37,23 @@ I percorsi di default (`staging/`, `db/`) sono relativi alla root del progetto. 
 FTP della Canon deposita in una cartella diversa, imposta `INCOMING_DIR` con il percorso
 assoluto di quella cartella.
 
-## 3. Migrazione DB
+## 3. Migrazione DB (automatica — nessun SSH necessario)
 
-Da Plesk → **Scheduled Tasks** (o SSH se disponibile), esegui una volta:
+**Non devi lanciare nulla a mano.** Lo schema del database si crea da solo, in modo
+idempotente, al primo avvio dell'applicazione (primo tick del cron o prima chiamata
+all'endpoint web). Assicurati solo che la cartella `db/` sia **scrivibile** dall'utente PHP.
 
-```bash
-php /var/www/vhosts/tuosito/photofacility/bin/migrate.php
-```
+Se preferisci crearlo esplicitamente *prima* di attivare il cron, hai tre modi — tutti
+senza SSH:
 
-Verifica che `db/photofacility.sqlite` sia stato creato e che la cartella `db/` sia
-**scrivibile** dall'utente PHP.
+- **Via browser** (il più rapido): imposta `CRON_TOKEN` nel `.env`, esponi `public/cron.php`
+  nel web root e visita una volta `https://tuosito/cron.php?token=IL_TUO_TOKEN`. La prima
+  chiamata crea lo schema e restituisce lo stato in JSON.
+- **Via Plesk → Scheduled Tasks**: aggiungi un task una tantum *Run a PHP script* che punta a
+  `bin/migrate.php` (stampa anche i conteggi per stato).
+- **Via SSH** (se un giorno lo attivi): `php bin/migrate.php`.
+
+Verifica poi che `db/photofacility.sqlite` sia stato creato.
 
 ## 4. Cron
 

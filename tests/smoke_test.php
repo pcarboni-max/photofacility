@@ -51,8 +51,9 @@ putenv('DELETE_AFTER_UPLOAD=true');
 Env::load($work . '/.env-nonexistent'); // forza il fallback su getenv()
 
 $config = Config::fromEnv($baseDir);
+// NOTA: nessuna chiamata a migrate(): lo schema deve crearsi da solo.
 $app = new App($config);
-$app->migrate($baseDir . '/db/schema.sql');
+$assert(($app->statusReport() === []), 'Auto-migrazione: schema creato al primo avvio (DB vuoto)');
 
 fwrite(STDOUT, "\n== 1. IntegrityValidator ==\n");
 $validator = new IntegrityValidator();

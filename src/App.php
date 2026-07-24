@@ -38,12 +38,32 @@ final class App
         $this->log = new Logger($config->logFile, $config->debug);
         $this->db = new Database($config->dbPath);
         $this->repo = new PhotoRepository($this->db->pdo());
+
+        // Auto-migrazione: su hosting senza SSH non c'è una shell per lanciare
+        // il migrate a mano. Al primo avvio (o se il DB è stato azzerato) lo
+        // schema viene creato in modo idempotente. Costo per tick: una query.
+        $this->ensureSchema();
     }
 
+    /** Applica lo schema esplicitamente (usato da bin/migrate.php). Idempotente. */
     public function migrate(string $schemaFile): void
     {
         $this->db->migrate($schemaFile);
         $this->log->info('Schema DB applicato.');
+    }
+
+    /** Crea lo schema se la tabella principale non esiste ancora. */
+    private function ensureSchema(): void
+    {
+        $exists = $this->db->pdo()
+            ->query("SELECT name FROM sqlite_master WHERE type='table' AND name='photos'")
+            ->fetchColumn();
+
+        if ($exists === false) {
+            $schemaFile = $this->config->baseDir . '/db/schema.sql';
+            $this->db->migrate($schemaFile);
+            $this->log->info('Schema DB creato automaticamente al primo avvio.');
+        }
     }
 
     /**

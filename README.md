@@ -38,12 +38,16 @@ S3** qualsiasi oggetto i cui byte non combacino.
 ## Setup rapido
 
 1. Copia `.env.example` in `.env` e compila bucket, region e credenziali AWS.
-2. Applica lo schema: `php bin/migrate.php`
-3. Configura il cron (ogni minuto):
+2. Configura il cron (ogni minuto):
    ```
    * * * * * /usr/bin/php /percorso/photofacility/bin/ingest.php >> /percorso/photofacility/db/cron.out 2>&1
    ```
-4. Configura il client FTP della Canon puntando alla cartella `staging/incoming/`.
+3. Configura il client FTP della Canon puntando alla cartella `staging/incoming/`.
+
+> **Lo schema del DB si crea da solo** al primo avvio (auto-migrazione idempotente):
+> non serve lanciare `bin/migrate.php` a mano. Utile su hosting **senza SSH**, dove non
+> hai una shell. `bin/migrate.php` resta disponibile come comando esplicito/di stato per
+> chi può eseguirlo (es. Plesk → Scheduled Tasks).
 
 Dettagli di deploy su Plesk: **[docs/SETUP_SHARED_HOSTING.md](docs/SETUP_SHARED_HOSTING.md)**
 Architettura e scelte di design: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
