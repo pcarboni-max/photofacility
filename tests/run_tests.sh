@@ -4,7 +4,10 @@ set -euo pipefail
 # Avvia il mock S3, esegue lo smoke test, poi ferma il mock.
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-php -S 127.0.0.1:8899 "$DIR/mock_s3.php" >/dev/null 2>&1 &
+export MOCK_S3_HEADERS="${TMPDIR:-/tmp}/pf_mock_headers.json"
+rm -f "$MOCK_S3_HEADERS"
+
+MOCK_S3_HEADERS="$MOCK_S3_HEADERS" php -S 127.0.0.1:8899 "$DIR/mock_s3.php" >/dev/null 2>&1 &
 MOCK_PID=$!
 trap 'kill $MOCK_PID 2>/dev/null || true' EXIT
 

@@ -10,6 +10,7 @@ use PhotoFacility\Ingest\ExifExtractor;
 use PhotoFacility\Ingest\Ingestor;
 use PhotoFacility\Ingest\IntegrityValidator;
 use PhotoFacility\S3\S3Client;
+use PhotoFacility\S3\StorageTarget;
 use PhotoFacility\S3\Uploader;
 use PhotoFacility\Support\Lock;
 use PhotoFacility\Support\Logger;
@@ -202,7 +203,7 @@ final class App
      * l'oggetto è già su S3 con la dimensione attesa lo consideriamo caricato,
      * altrimenti lo rimettiamo in coda (il re-PUT è idempotente).
      */
-    private function reapStuckUploads(S3Client $client): void
+    private function reapStuckUploads(StorageTarget $client): void
     {
         $cutoff = gmdate('Y-m-d H:i:s', time() - $this->config->reaperStuckMinutes * 60);
         $stuck = $this->repo->fetchStuckUploading($cutoff);
@@ -363,7 +364,7 @@ final class App
                 usePathStyle: $this->config->s3PathStyle,
                 sessionToken: $this->config->awsSessionToken,
             );
-            $res = $client->putObject((string) $this->config->s3Bucket, $key, $tmp, $sha256, $md5B64, 'application/x-sqlite3', 120);
+            $res = $client->putObject((string) $this->config->s3Bucket, $key, $tmp, $sha256, $md5B64, 'application/x-sqlite3', [], 120);
             if (!$res['ok']) {
                 throw new \RuntimeException('Upload backup DB fallito: ' . $res['error']);
             }

@@ -4,9 +4,9 @@ Guida al deploy della Fase 1 in un ambiente con **solo cron** e Composer via Ple
 
 ## 1. Layout dei file: cosa esporre e cosa NO
 
-Regola di sicurezza fondamentale: **solo `public/` può stare nel document root**. Tutto il
-resto (`src/`, `db/`, `.env`, `staging/`) deve stare **fuori** dalla cartella web, così non
-è raggiungibile via HTTP.
+Regola di sicurezza fondamentale: **nulla di questo progetto deve stare nel document root**.
+L'ingestion gira solo via cron CLI: non c'è alcuna superficie web da esporre. Tieni l'intero
+progetto (`src/`, `bin/`, `db/`, `.env`, `staging/`) **fuori** dalla cartella web.
 
 Layout consigliato:
 
@@ -15,15 +15,11 @@ Layout consigliato:
 ├── photofacility/          ← FUORI dal document root
 │   ├── src/  bin/  db/  staging/  .env
 │   └── ...
-└── httpdocs/               ← document root (web)
-    └── cron.php            ← SOLO se usi il cron via URL (vedi §4b)
+└── httpdocs/               ← document root (web) — non contiene nulla del progetto
 ```
 
-Se usi il cron via CLI (consigliato), **non serve esporre nulla sul web**: `public/cron.php`
-può restare inutilizzato.
-
 > ⚠️ Se il tuo hosting ti costringe a mettere tutto sotto `httpdocs/`, proteggi le cartelle
-> sensibili con un `.htaccess` (`Require all denied`) su `src/`, `db/`, `staging/`, `.env`.
+> con un `.htaccess` (`Require all denied`) su `src/`, `bin/`, `db/`, `staging/`, `.env`.
 > Ma la soluzione pulita resta tenerle fuori dal web root.
 
 ## 2. Configurazione
@@ -40,18 +36,13 @@ assoluto di quella cartella.
 ## 3. Migrazione DB (automatica — nessun SSH necessario)
 
 **Non devi lanciare nulla a mano.** Lo schema del database si crea da solo, in modo
-idempotente, al primo avvio dell'applicazione (primo tick del cron o prima chiamata
-all'endpoint web). Assicurati solo che la cartella `db/` sia **scrivibile** dall'utente PHP.
+idempotente, al primo avvio dell'applicazione (primo tick del cron). Assicurati solo che la
+cartella `db/` sia **scrivibile** dall'utente PHP.
 
-Se preferisci crearlo esplicitamente *prima* di attivare il cron, hai tre modi — tutti
-senza SSH:
+Se preferisci crearlo esplicitamente *prima* di attivare il cron, senza SSH:
 
-- **Via browser** (il più rapido): imposta `CRON_TOKEN` nel `.env`, esponi `public/cron.php`
-  nel web root e visita una volta `https://tuosito/cron.php?token=IL_TUO_TOKEN`. La prima
-  chiamata crea lo schema e restituisce lo stato in JSON.
 - **Via Plesk → Scheduled Tasks**: aggiungi un task una tantum *Run a PHP script* che punta a
-  `bin/migrate.php` (stampa anche i conteggi per stato).
-- **Via SSH** (se un giorno lo attivi): `php bin/migrate.php`.
+  `bin/migrate.php` ed eseguilo con **"Run Now"** (stampa anche i conteggi per stato).
 
 Verifica poi che `db/photofacility.sqlite` sia stato creato.
 
@@ -66,24 +57,15 @@ In Plesk → **Scheduled Tasks** → *Run a PHP script* oppure *Run a command*:
 ```
 
 Ogni minuto è il massimo utile: il `flock` garantisce che i tick non si sovrappongano se
-uno sfora. Il budget `MAX_RUNTIME_SECONDS` (default 50s) tiene ogni tick sotto il minuto.
+uno sfora.
 
 `bin/ingest.php` usa il **loop-within-cron**: acquisisce il lock una volta e cicla per
 ~`LOOP_DURATION_SECONDS` (default 55s), così c'è quasi sempre un processo vivo e la latenza
 scende da ~1 min a pochi secondi. Il `flock` fa uscire subito il tick del minuto successivo
 se il precedente è ancora attivo.
 
-### 4b. Via URL (solo se la CLI non è disponibile)
-
-Imposta `CRON_TOKEN` nel `.env`, esponi `public/cron.php` nel web root e schedula (token
-**via header**, non in querystring, per non lasciarlo nei log):
-
-```
-* * * * * wget -q -O - --header="X-Cron-Token: IL_TUO_TOKEN" "https://tuosito/cron.php"
-```
-
-Meno robusto (soggetto a `max_execution_time` del PHP web) e fa un solo passaggio, non il
-loop: da usare come ripiego.
+> Non esiste un entry-point web: l'ingestion gira **solo** via CLI. Questo elimina l'unica
+> superficie HTTP (e con essa token nei log, timeout del web server, info-disclosure).
 
 ### 4c. Altri task schedulati (Plesk → Scheduled Tasks)
 

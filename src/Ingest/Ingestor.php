@@ -118,12 +118,26 @@ final class Ingestor
             return 'failed';
         }
 
-        // 2. deduplica / idempotenza
+        // 2. deduplica / idempotenza (R11: reinvio da stato terminale = recupero)
         $existing = $this->repo->findBySha256((string) $v['sha256']);
         if ($existing !== null) {
+            if (in_array($existing['status'], ['QUARANTINE', 'ERROR'], true)) {
+                // la camera ha reinviato una foto che avevamo scartato: recuperala
+                $safeName = $this->sanitizeName($filename);
+                $processingPath = $this->config->processingDir . '/' . $existing['uuid'] . '_' . $safeName;
+                if (!@rename($path, $processingPath)) {
+                    $this->log->error('Rename in processing fallito (recupero)', ['file' => $filename]);
+                    return 'failed';
+                }
+                $this->repo->recoverToPending((int) $existing['id'], $processingPath);
+                $this->repo->logEvent((int) $existing['id'], 'retry', 'recuperata da reinvio camera');
+                $this->log->info('Foto recuperata da reinvio (era in ' . $existing['status'] . ')', ['id' => $existing['id'], 'file' => $filename]);
+                return 'admitted';
+            }
+            // vero duplicato (già su S3 o già in coda): ignora
             $this->repo->logEvent((int) $existing['id'], 'skipped_duplicate', $filename);
             $this->log->info('Duplicato ignorato', ['file' => $filename, 'sha256' => $v['sha256']]);
-            @unlink($path); // già noto: liberiamo lo staging
+            @unlink($path);
             return 'skipped';
         }
 

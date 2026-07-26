@@ -38,6 +38,19 @@ if ($dumpDir && is_dir($dumpDir)) {
     file_put_contents($dumpDir . '/' . $md5Hex . '.bin', $body);
 }
 
+// cattura gli header x-amz-meta-* dell'ultima richiesta (per i test M1)
+$headersFile = getenv('MOCK_S3_HEADERS');
+if ($headersFile) {
+    $meta = [];
+    foreach ($_SERVER as $k => $v) {
+        if (str_starts_with($k, 'HTTP_X_AMZ_META_')) {
+            $name = strtolower(str_replace('_', '-', substr($k, 5)));
+            $meta[$name] = $v;
+        }
+    }
+    file_put_contents($headersFile, json_encode($meta));
+}
+
 http_response_code(200);
 header('ETag: "' . $md5Hex . '"');
 echo '';

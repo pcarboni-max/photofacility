@@ -92,6 +92,12 @@ $assert(($counts['UPLOADED_S3'] ?? 0) === 1, 'Stato DB = UPLOADED_S3');
 $assert(!is_file($jpeg), 'File staging cancellato dopo conferma upload');
 $assert(is_file("$work/db/health.json"), 'health.json scritto');
 
+// M1: metadati x-amz-meta-* firmati e ricevuti dal mock
+$hdrFile = getenv('MOCK_S3_HEADERS');
+$meta = $hdrFile && is_file($hdrFile) ? json_decode((string) file_get_contents($hdrFile), true) : [];
+$assert(($meta['x-amz-meta-sha256'] ?? '') === $v['sha256'], 'M1: header x-amz-meta-sha256 corretto');
+$assert(($meta['x-amz-meta-original-filename'] ?? '') === 'foto1.jpg', 'M1: header x-amz-meta-original-filename presente');
+
 fwrite(STDOUT, "\n== 3. Idempotenza / deduplica ==\n");
 file_put_contents("$work/staging/incoming/foto1_bis.jpg", $makeJpeg(str_repeat('CANON-EOS-DATA', 500)));
 $r2 = $app->runTick();
@@ -122,6 +128,18 @@ $pdo->exec("UPDATE photos SET status='QUARANTINE' WHERE uuid='stuck-uuid'");
 $n = $app->requeue(['QUARANTINE']);
 $assert($n === 1, 'Requeue riporta 1 foto in coda');
 $assert(($pdo->query("SELECT status FROM photos WHERE uuid='stuck-uuid'")->fetchColumn()) === 'PENDING_S3', 'Stato tornato PENDING_S3');
+
+fwrite(STDOUT, "\n== 5b. Recupero da reinvio (R11) ==\n");
+// foto1 è UPLOADED_S3: la forziamo in QUARANTINE, poi la camera "reinvia" gli
+// stessi byte → deve essere RECUPERATA (non scartata come duplicato).
+$pdo->exec("UPDATE photos SET status='QUARANTINE' WHERE original_filename='foto1.jpg'");
+file_put_contents("$work/staging/incoming/foto1_reinvio.jpg", $makeJpeg(str_repeat('CANON-EOS-DATA', 500)));
+$rr = $app->runTick();
+$assert(($rr['ingest']['admitted'] ?? 0) === 1, 'Reinvio da QUARANTINE = recuperato (admitted), non skipped');
+$rowF1 = $pdo->query("SELECT status, COUNT(*) OVER () AS n FROM photos WHERE original_filename='foto1.jpg'")->fetch(PDO::FETCH_ASSOC);
+$assert(($rowF1['status'] ?? '') === 'UPLOADED_S3', 'Foto recuperata e ricaricata su S3');
+$dupCount = (int) $pdo->query("SELECT COUNT(*) FROM photos WHERE checksum_sha256='" . $v['sha256'] . "'")->fetchColumn();
+$assert($dupCount === 1, 'Nessuna riga duplicata dopo il recupero');
 
 fwrite(STDOUT, "\n== 6. Lock anti-sovrapposizione ==\n");
 $lock = new \PhotoFacility\Support\Lock($config->lockFile);

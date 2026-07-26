@@ -98,14 +98,32 @@ final class ExifExtractor
     private function normalizeExifDate(string $raw): ?string
     {
         $raw = trim($raw);
-        if (preg_match('/^(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/', $raw, $m)) {
-            [$y, $mo, $d, $h, $mi, $s] = [(int) $m[1], (int) $m[2], (int) $m[3], (int) $m[4], (int) $m[5], (int) $m[6]];
-            if (!checkdate($mo, $d, $y) || $y < 1990 || $h > 23 || $mi > 59 || $s > 59) {
+        if (!preg_match('/^(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/', $raw, $m)) {
+            return null;
+        }
+        [$y, $mo, $d, $h, $mi, $s] = [(int) $m[1], (int) $m[2], (int) $m[3], (int) $m[4], (int) $m[5], (int) $m[6]];
+
+        // validità del calendario
+        if (!checkdate($mo, $d, $y) || $h > 23 || $mi > 59 || $s > 59) {
+            return null;
+        }
+        // plausibilità: niente date pre-2000 (orologio resettato: 0000/1980/2000-01-01)
+        if ($y < 2000) {
+            return null;
+        }
+        // plausibilità: niente date nel futuro oltre 48h (deriva d'orologio).
+        // exif è orologio da parete: confronto conservativo trattandolo come UTC.
+        $value = sprintf('%04d-%02d-%02d %02d:%02d:%02d', $y, $mo, $d, $h, $mi, $s);
+        try {
+            $dt = new \DateTimeImmutable($value, new \DateTimeZone('UTC'));
+            if ($dt->getTimestamp() > time() + 48 * 3600) {
                 return null;
             }
-            return sprintf('%04d-%02d-%02d %02d:%02d:%02d', $y, $mo, $d, $h, $mi, $s);
+        } catch (\Throwable) {
+            return null;
         }
-        return null;
+
+        return $value;
     }
 
     /** Converte un istante UTC nella data ('Y-m-d') del fuso "di casa". */

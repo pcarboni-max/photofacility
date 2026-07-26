@@ -59,8 +59,6 @@ final class Config
         public readonly int $backlogAgeAlertMinutes,
         public readonly int $stagingAlertMb,
 
-        // web endpoint
-        public readonly ?string $cronToken,
         public readonly bool $debug,
     ) {
     }
@@ -108,7 +106,6 @@ final class Config
             backlogAgeAlertMinutes: Env::int('BACKLOG_AGE_ALERT_MINUTES', 30),
             stagingAlertMb: Env::int('STAGING_ALERT_MB', 5120),
 
-            cronToken: Env::get('CRON_TOKEN'),
             debug: Env::bool('DEBUG', false),
         );
     }

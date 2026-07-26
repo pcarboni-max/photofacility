@@ -71,7 +71,6 @@ bin/migrate.php       applica lo schema DB (opzionale: è anche automatico)
 bin/requeue.php       ripesca le foto da QUARANTINE/ERROR
 bin/maintain.php      pruning eventi + checkpoint WAL + VACUUM
 bin/backup.php        backup del DB SQLite su S3 (metadati/tag Fase 2)
-public/cron.php       entry point web alternativo (cron via URL, protetto da token)
 src/Config.php        configurazione da .env (config DB disaccoppiata da S3)
 src/App.php           orchestrazione (loop, reaper, health, alerting)
 src/Ingest/           validazione integrità, EXIF, scansione + freno disco pieno

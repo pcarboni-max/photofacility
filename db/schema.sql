@@ -15,10 +15,11 @@ CREATE TABLE IF NOT EXISTS photos (
     original_filename TEXT    NOT NULL,                    -- nome dato dalla camera
     camera_model      TEXT,                                -- da EXIF se disponibile
 
-    -- stato del ciclo di vita
-    status            TEXT    NOT NULL DEFAULT 'RECEIVED'
-                      CHECK (status IN ('RECEIVED','VALIDATING','PENDING_S3',
-                                        'UPLOADING_S3','UPLOADED_S3','ERROR','QUARANTINE')),
+    -- stato del ciclo di vita (D6: RECEIVED/VALIDATING rimossi perché mai usati —
+    -- l'ammissione è sincrona e inserisce direttamente PENDING_S3).
+    status            TEXT    NOT NULL DEFAULT 'PENDING_S3'
+                      CHECK (status IN ('PENDING_S3','UPLOADING_S3','UPLOADED_S3',
+                                        'ERROR','QUARANTINE')),
     status_detail     TEXT,                                -- diagnostica / messaggio errore
 
     -- integrità
@@ -102,6 +103,22 @@ CREATE TABLE IF NOT EXISTS bulk_operations (
     affected_rows INTEGER,
     performed_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ------------------------------------------------------------
+-- bulk_operation_items (predisposizione Fase 2): dettaglio per l'UNDO del
+-- tagging massivo. Una riga per foto/tag con il valore precedente, così una
+-- operazione massiva è annullabile riapplicando gli old_value in ordine inverso.
+-- Creata SUBITO (vuota e inutilizzata in Fase 1) per non migrare lo schema dopo.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS bulk_operation_items (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    bulk_operation_id INTEGER NOT NULL REFERENCES bulk_operations(id) ON DELETE CASCADE,
+    photo_id          INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+    tag               TEXT    NOT NULL,
+    old_value         TEXT,
+    new_value         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_bulk_items_op ON bulk_operation_items(bulk_operation_id);
 
 -- ------------------------------------------------------------
 -- ingest_events: log applicativo per osservabilità

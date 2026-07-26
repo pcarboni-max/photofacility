@@ -234,9 +234,25 @@ final class PhotoRepository
     {
         $rows = $this->pdo->query(
             "SELECT staging_path FROM photos
-             WHERE status IN ('RECEIVED','VALIDATING','PENDING_S3','UPLOADING_S3') AND staging_path IS NOT NULL"
+             WHERE status IN ('PENDING_S3','UPLOADING_S3') AND staging_path IS NOT NULL"
         )->fetchAll();
         return array_map(static fn ($r) => (string) $r['staging_path'], $rows);
+    }
+
+    /**
+     * Recupero (R11): una foto già nota ma in stato terminale-fallito
+     * (QUARANTINE/ERROR) reinviata dalla camera viene rimessa in coda con il
+     * nuovo file di staging, invece di essere scartata come duplicato.
+     */
+    public function recoverToPending(int $id, string $newStagingPath): void
+    {
+        $stmt = $this->pdo->prepare(
+            "UPDATE photos
+             SET status = 'PENDING_S3', staging_path = :sp, upload_attempts = 0,
+                 next_retry_at = NULL, status_detail = 'recuperata da reinvio camera'
+             WHERE id = :id"
+        );
+        $stmt->execute([':sp' => $newStagingPath, ':id' => $id]);
     }
 
     /** Pruning dei vecchi eventi per non far crescere la tabella all'infinito. */

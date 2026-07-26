@@ -22,7 +22,7 @@ use PhotoFacility\Support\Notifier;
 final class Uploader
 {
     public function __construct(
-        private readonly S3Client $client,
+        private readonly StorageTarget $client,
         private readonly PhotoRepository $repo,
         private readonly Config $config,
         private readonly Logger $log,
@@ -60,6 +60,15 @@ final class Uploader
 
             $this->repo->markUploading($id);
 
+            // Metadati nell'oggetto S3 (M1): rendono il bucket autodescrittivo e
+            // il DB ricostruibile. Costo zero (stessa richiesta PutObject).
+            $meta = [
+                'original-filename' => (string) $row['original_filename'],
+                'sha256' => (string) $row['checksum_sha256'],
+                'taken-at' => (string) ($row['exif_taken_at'] ?? ''),
+                'partition-date' => (string) $row['partition_date'],
+            ];
+
             $result = $this->client->putObject(
                 (string) $row['s3_bucket'],
                 (string) $row['s3_key'],
@@ -67,6 +76,7 @@ final class Uploader
                 (string) $row['checksum_sha256'],
                 $this->md5Base64FromHex((string) $row['checksum_md5']),
                 (string) $row['mime_detected'],
+                $meta,
                 $remaining,
             );
 

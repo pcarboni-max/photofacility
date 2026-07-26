@@ -15,7 +15,7 @@ namespace PhotoFacility\S3;
  * Supporta virtual-hosted-style e path-style (utile per bucket con punti nel
  * nome o endpoint S3-compatibili).
  */
-final class S3Client
+final class S3Client implements StorageTarget
 {
     public function __construct(
         private readonly string $region,
@@ -40,6 +40,7 @@ final class S3Client
         string $sha256Hex,
         string $md5Base64,
         string $contentType,
+        array $meta = [],
         int $timeout = 120
     ): array {
         $size = filesize($filePath);
@@ -54,12 +55,33 @@ final class S3Client
             return ['ok' => false, 'status' => 0, 'etag' => null, 'sse' => null, 'error' => $insecure, 'retriable' => false];
         }
 
-        $curlHeaders = $this->signedHeaders('PUT', $host, $urlPath, $sha256Hex, [
+        $extra = [
             'content-md5' => $md5Base64,
             'content-type' => $contentType,
-        ]);
+        ];
+        // Metadati utente → header x-amz-meta-* (firmati). I valori HTTP devono
+        // essere ASCII stampabili: sanitizziamo (accenti ecc. → '_'). I valori
+        // VUOTI vanno omessi: cURL elimina un header senza valore, ma noi lo
+        // avremmo firmato → SignatureDoesNotMatch.
+        foreach ($meta as $k => $v) {
+            $value = $this->asciiHeaderValue((string) $v);
+            if ($value === '') {
+                continue;
+            }
+            $name = 'x-amz-meta-' . strtolower(preg_replace('/[^a-z0-9-]/i', '-', (string) $k));
+            $extra[$name] = $value;
+        }
+
+        $curlHeaders = $this->signedHeaders('PUT', $host, $urlPath, $sha256Hex, $extra);
 
         return $this->send('PUT', $baseUrl, $curlHeaders, $filePath, $size, $timeout);
+    }
+
+    private function asciiHeaderValue(string $v): string
+    {
+        // rimuove i caratteri non ASCII-stampabili e limita la lunghezza
+        $clean = preg_replace('/[^\x20-\x7E]/', '_', $v) ?? '';
+        return substr(trim($clean), 0, 512);
     }
 
     /**

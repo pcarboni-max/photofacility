@@ -89,24 +89,35 @@ concorrente + più writer, migra a MariaDB: `TEXT`→`VARCHAR`/`DATETIME`, `date
 `CURRENT_TIMESTAMP`, `AUTOINCREMENT`→`AUTO_INCREMENT`, `ENGINE=InnoDB`. Il codice accede al
 DB solo via PDO, quindi il cambio di driver è localizzato in `src/Database/`.
 
-## Client S3 senza SDK
+## Storage: la porta `StorageTarget` e il client S3
 
-`src/S3/S3Client.php` implementa **AWS Signature V4** per `PutObject`:
+`Uploader` e `App` dipendono dall'interfaccia **`StorageTarget`** (`putObject`, `headObject`),
+non dal client concreto. L'unica implementazione oggi è `src/S3/S3Client.php`, che implementa
+**AWS Signature V4**:
 
 - Firma con payload signed (SHA-256 già calcolato in validazione).
 - Upload in **streaming** dal file (`CURLOPT_INFILE`), nessun caricamento in memoria.
-- `Content-MD5` per l'integrità lato S3; verifica ETag lato client.
+- `Content-MD5` per l'integrità lato S3; verifica ETag lato client (consapevole di SSE-KMS).
+- **Metadati `x-amz-meta-*` firmati** (nome originale, sha256, data scatto, partizione): il
+  bucket diventa **autodescrittivo** e il DB ricostruibile.
 - Supporta virtual-hosted-style, path-style ed endpoint S3-compatibili (MinIO, Wasabi).
 
-Motivazione: zero dipendenze da caricare su hosting condiviso, footprint minimo, nessun
-`vendor/` da mantenere. Se in futuro servisse il **multipart upload** (file > 5 GB o
-ripresa a blocchi), si può estendere questa classe o passare all'SDK ufficiale via Composer.
+La porta rende la scelta **reversibile**: un adapter basato su AWS SDK (per presigned URL e
+`ListObjects` in Fase 2, o multipart per file grandi) potrà affiancare il client a mano senza
+toccare `Uploader`/`App`. Motivazione del client a mano in Fase 1: footprint minimo, nessuna
+dipendenza runtime, e copre esattamente ciò che serve (`PutObject`+`HeadObject`).
+
+## Nessun endpoint web
+
+L'ingestion gira **solo** via cron CLI (`bin/ingest.php`). Non esiste alcun entry-point HTTP:
+questo elimina l'unica superficie d'attacco web (token nei log, timeout del web server,
+info-disclosure) senza perdere funzionalità, dato che il cron CLI di Plesk è operativo.
 
 ## Cosa NON è incluso (limiti noti della Fase 1)
 
-- **Multipart upload / ripresa**: PutObject single-part. Adeguato fino a file di alcune
-  centinaia di MB; oltre, o su reti molto instabili verso AWS, valutare il multipart.
-- **UI**: è l'oggetto della Fase 2 (visualizzazione per giorno + tagging EXIF massivo). Lo
-  schema DB è già predisposto.
-- **Notifiche/alerting**: al momento solo log su file. Un hook di alert (email/Slack) sui
-  passaggi in `QUARANTINE` è un'aggiunta naturale.
+- **Multipart upload / ripresa**: PutObject single-part. Adeguato al carico JPEG; per RAW
+  molto grandi su reti instabili si aggiungerebbe un adapter dietro `StorageTarget`.
+- **AWS SDK**: non adottato in Fase 1 (il client a mano copre `PutObject`+`HeadObject`).
+  Previsto al confine della Fase 2, quando servono presigned URL e `ListObjects`.
+- **UI**: è l'oggetto della Fase 2 (galleria per giorno + tagging EXIF massivo). Lo schema DB
+  è già predisposto (incl. `bulk_operation_items` per l'undo del tagging).
