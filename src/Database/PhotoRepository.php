@@ -168,4 +168,84 @@ final class PhotoRepository
         }
         return $out;
     }
+
+    /**
+     * Record bloccati in UPLOADING_S3 (crash a metà upload): fetchUploadable non
+     * li riprende, quindi il reaper li recupera.
+     * @return array<int,array<string,mixed>>
+     */
+    public function fetchStuckUploading(string $olderThanUtc): array
+    {
+        $stmt = $this->pdo->prepare(
+            "SELECT * FROM photos WHERE status = 'UPLOADING_S3' AND updated_at < :t ORDER BY id ASC"
+        );
+        $stmt->execute([':t' => $olderThanUtc]);
+        return $stmt->fetchAll();
+    }
+
+    /** Riporta un record in coda (PENDING_S3), azzerando l'eventuale retry programmato. */
+    public function resetToPending(int $id, ?string $detail = null): void
+    {
+        $stmt = $this->pdo->prepare(
+            "UPDATE photos SET status = 'PENDING_S3', next_retry_at = NULL, status_detail = :d WHERE id = :id"
+        );
+        $stmt->execute([':d' => $detail, ':id' => $id]);
+    }
+
+    /**
+     * Ripesca dalla dead-letter: riporta in coda i record in QUARANTINE/ERROR.
+     * @param list<string> $statuses
+     * @return int righe interessate
+     */
+    public function requeueTerminal(array $statuses): int
+    {
+        $statuses = array_values(array_intersect($statuses, ['QUARANTINE', 'ERROR']));
+        if ($statuses === []) {
+            return 0;
+        }
+        $placeholders = implode(',', array_fill(0, count($statuses), '?'));
+        $stmt = $this->pdo->prepare(
+            "UPDATE photos SET status = 'PENDING_S3', upload_attempts = 0, next_retry_at = NULL,
+             status_detail = 'requeued' WHERE status IN ({$placeholders})"
+        );
+        $stmt->execute($statuses);
+        return $stmt->rowCount();
+    }
+
+    /**
+     * Statistiche del backlog di upload per l'alerting.
+     * @return array{count:int, oldest_age_seconds:?int}
+     */
+    public function backlogStats(): array
+    {
+        $row = $this->pdo->query(
+            "SELECT COUNT(*) AS n,
+                    CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', MIN(received_at)) AS INTEGER) AS age
+             FROM photos WHERE status = 'PENDING_S3'"
+        )->fetch();
+        return [
+            'count' => (int) ($row['n'] ?? 0),
+            'oldest_age_seconds' => $row['age'] !== null ? (int) $row['age'] : null,
+        ];
+    }
+
+    /** Percorsi di staging ancora "attivi" (stati non terminali): non vanno cancellati. */
+    public function activeStagingPaths(): array
+    {
+        $rows = $this->pdo->query(
+            "SELECT staging_path FROM photos
+             WHERE status IN ('RECEIVED','VALIDATING','PENDING_S3','UPLOADING_S3') AND staging_path IS NOT NULL"
+        )->fetchAll();
+        return array_map(static fn ($r) => (string) $r['staging_path'], $rows);
+    }
+
+    /** Pruning dei vecchi eventi per non far crescere la tabella all'infinito. */
+    public function pruneEvents(int $days): int
+    {
+        $stmt = $this->pdo->prepare(
+            "DELETE FROM ingest_events WHERE created_at < datetime('now', :age)"
+        );
+        $stmt->execute([':age' => "-{$days} days"]);
+        return $stmt->rowCount();
+    }
 }

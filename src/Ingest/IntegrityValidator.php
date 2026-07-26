@@ -43,6 +43,13 @@ final class IntegrityValidator
             return $fail('firma binaria non riconosciuta (possibile file corrotto o troncato)');
         }
 
+        // Gate di COMPLETEZZA (non solo di tipo): per i formati con un marcatore
+        // di fine noto verifichiamo che il file termini correttamente. È questo
+        // che rileva un upload FTP troncato che la sola quiescenza mtime non coglie.
+        if (!$this->checkCompleteness($path, $mime, $size)) {
+            return $fail('file incompleto: marcatore di fine mancante (upload troncato?)');
+        }
+
         [$sha256, $md5Hex, $md5Base64] = $this->hashStreaming($path);
         if ($sha256 === null) {
             return $fail('impossibile calcolare il checksum');
@@ -109,6 +116,36 @@ final class IntegrityValidator
         }
 
         return null;
+    }
+
+    /**
+     * Verifica il marcatore di fine per i formati che ne hanno uno noto.
+     * Per i formati senza trailer semplice (CR2/CR3/TIFF/HEIC) ritorna true:
+     * la difesa resta la quiescenza mtime + magic bytes.
+     */
+    private function checkCompleteness(string $path, string $mime, int $size): bool
+    {
+        $tail = static function (int $n) use ($path, $size): string {
+            if ($size < $n) {
+                return '';
+            }
+            $fh = fopen($path, 'rb');
+            if ($fh === false) {
+                return '';
+            }
+            fseek($fh, -$n, SEEK_END);
+            $data = fread($fh, $n) ?: '';
+            fclose($fh);
+            return $data;
+        };
+
+        return match ($mime) {
+            // JPEG deve terminare con EOI: FF D9
+            'image/jpeg' => str_ends_with($tail(2), "\xFF\xD9"),
+            // PNG deve terminare con il chunk IEND
+            'image/png' => str_ends_with($tail(8), "IEND\xAE\x42\x60\x82"),
+            default => true,
+        };
     }
 
     /**

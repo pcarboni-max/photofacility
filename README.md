@@ -31,9 +31,11 @@ Canon EOS ──FTP──► staging/incoming/
    (tutto entro MAX_RUNTIME_SECONDS)
 ```
 
-Nessun file incompleto o corrotto raggiunge mai S3: la guardia di quiescenza esclude gli
-upload parziali, i magic bytes escludono i file non-foto, e `Content-MD5` fa **rifiutare da
-S3** qualsiasi oggetto i cui byte non combacino.
+**Rileviamo e mettiamo in quarantena i file la cui struttura non è completa**, così non
+raggiungono S3: la guardia di quiescenza esclude gli upload ancora in corso, i magic bytes
+escludono i file non-foto, il **controllo del trailer** (`FF D9` per JPEG, `IEND` per PNG)
+intercetta i troncamenti, e `Content-MD5` fa **rifiutare da S3** qualsiasi oggetto i cui byte
+non combacino con il checksum calcolato in locale.
 
 ## Setup rapido
 
@@ -49,7 +51,7 @@ S3** qualsiasi oggetto i cui byte non combacino.
 > hai una shell. `bin/migrate.php` resta disponibile come comando esplicito/di stato per
 > chi può eseguirlo (es. Plesk → Scheduled Tasks).
 
-Dettagli di deploy su Plesk: **[docs/SETUP_SHARED_HOSTING.md](docs/SETUP_SHARED_HOSTING.md)**
+Dettagli di deploy su Plesk: **[docs/SETUP.md](docs/SETUP.md)**
 Architettura e scelte di design: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 
 ## Test
@@ -64,13 +66,30 @@ SigV4, upload, verifica ETag, lock).
 ## Struttura
 
 ```
-bin/ingest.php        entry point cron (CLI)
-bin/migrate.php       applica lo schema DB
+bin/ingest.php        entry point cron (CLI) — loop-within-cron
+bin/migrate.php       applica lo schema DB (opzionale: è anche automatico)
+bin/requeue.php       ripesca le foto da QUARANTINE/ERROR
+bin/maintain.php      pruning eventi + checkpoint WAL + VACUUM
+bin/backup.php        backup del DB SQLite su S3 (metadati/tag Fase 2)
 public/cron.php       entry point web alternativo (cron via URL, protetto da token)
-src/Config.php        configurazione da .env
-src/App.php           orchestrazione di un tick
-src/Ingest/           validazione integrità, EXIF, scansione ingestion
-src/S3/               client S3 SigV4 + uploader con retry
-src/Database/         schema access (PDO/SQLite)
+src/Config.php        configurazione da .env (config DB disaccoppiata da S3)
+src/App.php           orchestrazione (loop, reaper, health, alerting)
+src/Ingest/           validazione integrità, EXIF, scansione + freno disco pieno
+src/S3/               client S3 SigV4 + uploader con retry/quarantena
+src/Support/          Env, Logger, Lock, Notifier (alerting webhook/email)
+src/Database/         schema access (PDO/SQLite WAL)
 db/schema.sql         DDL (photos + tabelle Fase 2)
 ```
+
+## Operazioni senza SSH
+
+Tutte via Plesk → Scheduled Tasks ("Run Now" per le azioni one-off). Vedi
+[docs/SETUP.md](docs/SETUP.md).
+
+| Azione | Comando |
+| :-- | :-- |
+| Ingestion (ricorrente, ogni minuto) | `php bin/ingest.php` |
+| Ripescare foto in quarantena | `php bin/requeue.php` |
+| Manutenzione DB (mensile) | `php bin/maintain.php` |
+| Backup DB su S3 (giornaliero) | `php bin/backup.php` |
+| Stato/health | scarica `db/health.json` via FTP |

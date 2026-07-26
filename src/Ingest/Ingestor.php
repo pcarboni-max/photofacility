@@ -31,7 +31,7 @@ final class Ingestor
 
     /**
      * @param callable():bool $withinBudget
-     * @return array{admitted:int, skipped:int, failed:int, waiting:int}
+     * @return array{admitted:int, skipped:int, failed:int, waiting:int, disk_low:bool}
      */
     public function run(callable $withinBudget): array
     {
@@ -43,7 +43,18 @@ final class Ingestor
         $incoming = $this->config->incomingDir;
         if (!is_dir($incoming)) {
             @mkdir($incoming, 0775, true);
-            return ['admitted' => 0, 'skipped' => 0, 'failed' => 0, 'waiting' => 0];
+            return ['admitted' => 0, 'skipped' => 0, 'failed' => 0, 'waiting' => 0, 'disk_low' => false];
+        }
+
+        // FRENO A DISCO PIENO: se lo spazio libero è sotto soglia, NON ammettiamo
+        // nuovi file (ammetterli copierebbe dati su un disco quasi pieno e farebbe
+        // fallire anche le scritture SQLite). Lasciamo però drenare la coda S3
+        // (gestita da App), che libera spazio man mano che gli upload confermano.
+        $freeBytes = @disk_free_space($incoming);
+        if ($freeBytes !== false && $freeBytes < ($this->config->diskMinFreeMb * 1024 * 1024)) {
+            $freeMb = (int) round($freeBytes / (1024 * 1024));
+            $this->log->error('Disco quasi pieno: ingestione sospesa (solo drain S3)', ['free_mb' => $freeMb]);
+            return ['admitted' => 0, 'skipped' => 0, 'failed' => 0, 'waiting' => 0, 'disk_low' => true];
         }
 
         $now = time();
@@ -93,7 +104,7 @@ final class Ingestor
             };
         }
 
-        return ['admitted' => $admitted, 'skipped' => $skipped, 'failed' => $failed, 'waiting' => $waiting];
+        return ['admitted' => $admitted, 'skipped' => $skipped, 'failed' => $failed, 'waiting' => $waiting, 'disk_low' => false];
     }
 
     private function admitFile(string $path, string $filename): string

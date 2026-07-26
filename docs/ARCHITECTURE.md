@@ -36,15 +36,21 @@ Un file raggiunge S3 solo dopo aver superato, in ordine, tutti questi gate:
    quindi un upload parziale non viene mai preso in carico.
 2. **Estensione** ammessa (jpg/jpeg/cr2/cr3/tif/heic/png).
 3. **Magic bytes** — l'header binario conferma il formato (JPEG `FF D8 FF`, CR2 `II 2A … CR`,
-   CR3/HEIC box `ftyp`). Un file troncato o non-foto viene messo in quarantena.
-4. **Checksum in streaming** — SHA-256 + MD5 calcolati leggendo il file a blocchi di 1 MB
+   CR3/HEIC box `ftyp`). Un file non-foto viene messo in quarantena.
+4. **Trailer di completezza** — per i formati con marcatore di fine noto (JPEG `FF D9`, PNG
+   `IEND`) si verifica che il file termini correttamente: è questo che intercetta un upload
+   FTP **troncato** che la sola quiescenza mtime non coglie.
+5. **Checksum in streaming** — SHA-256 + MD5 calcolati leggendo il file a blocchi di 1 MB
    (nessun RAW in RAM).
-5. **Deduplica** — vincolo `UNIQUE` su `checksum_sha256`: una foto già nota (riconnessione
+6. **Deduplica** — vincolo `UNIQUE` su `checksum_sha256`: una foto già nota (riconnessione
    della camera, reinvio) non genera duplicati su S3.
-6. **Rename atomico** — `incoming/ → processing/` sullo stesso filesystem: elimina la race
+7. **Rename atomico** — `incoming/ → processing/` sullo stesso filesystem: elimina la race
    tra scrittura FTP e lettura dell'uploader.
-7. **Content-MD5 verso S3** — S3 **rifiuta** l'oggetto se il digest non combacia. A upload
-   completato si verifica anche l'**ETag** (per PutObject single-part = MD5 hex).
+8. **Content-MD5 verso S3** — S3 **rifiuta** l'oggetto se il digest non combacia. A upload
+   completato si verifica anche l'**ETag** — con l'accortezza che con **SSE-KMS** o multipart
+   l'ETag non è l'MD5, quindi in quei casi ci si affida al solo Content-MD5.
+9. **`UNIQUE(s3_bucket, s3_key)`** — due righe non possono puntare alla stessa chiave S3:
+   l'INSERT fallisce invece di causare una sovrascrittura silenziosa.
 
 ## Tabella Edge Cases & Resilience
 
@@ -54,9 +60,12 @@ Un file raggiunge S3 solo dopo aver superato, in ordine, tutti questi gate:
 | Camera reinvia la stessa foto | Duplicati su S3 | SHA-256 `UNIQUE` + chiave S3 deterministica ⇒ skip idempotente. |
 | Upload parziale con mtime "fermo" | JPEG/RAW troncato su S3 | Magic bytes + `Content-MD5` (S3 rifiuta il digest errato). |
 | S3 irraggiungibile | Backlog / blocco | Coda `PENDING_S3` + retry con backoff esponenziale + jitter; dopo N → `QUARANTINE`. |
-| Tick di cron sovrapposti | Doppia elaborazione / race | `flock` non bloccante: il secondo tick esce subito. |
-| Tick supera il time limit dell'host | Kill a metà, stato incoerente | Budget `MAX_RUNTIME_SECONDS`: si ferma pulito, il resto al tick dopo. |
-| Crash a metà upload | File appeso | Stato in DB; il tick successivo riprende i `PENDING_S3`. |
+| Tick di cron sovrapposti | Doppia elaborazione / race | `flock` non bloccante: il secondo tick esce subito. Il **loop-within-cron** tiene un solo processo vivo che si rinnova ogni minuto. |
+| Tick supera il time limit dell'host | Kill a metà, stato incoerente | Budget di tempo (`LOOP_DURATION_SECONDS`/`MAX_RUNTIME_SECONDS`), controllato anche tra un upload e l'altro; `CURLOPT_TIMEOUT` allineato al tempo residuo. |
+| Crash a metà upload (record in `UPLOADING_S3`) | Foto persa in silenzio (la coda non la riprende) | **Reaper** a inizio ciclo: i record `UPLOADING_S3` più vecchi di `REAPER_STUCK_MINUTES` vengono riconciliati via `HeadObject` (già su S3 → `UPLOADED`; altrimenti → `PENDING_S3`). |
+| Disco quasi pieno (backlog per S3 down) | Falliscono upload FTP e scritture SQLite | **Freno**: sotto `DISK_MIN_FREE_MB` si sospende l'ammissione di nuovi file e si continua solo a drenare la coda S3 (che libera spazio). Alert. |
+| Errore S3 non ritentabile (403/400) | 8 retry sprecati | Distinzione retriabile/non-retriabile: un 4xx va subito in `QUARANTINE`. |
+| Guasto silenzioso non presidiato | Nessuno se ne accorge | **Alerting** (webhook/email) su quarantena, backlog grande/invecchiato, disco pieno; `health.json` a ogni ciclo. |
 | Quota disco satura (RAW da 60 MB) | Scritture FTP falliscono | `DELETE_AFTER_UPLOAD` cancella dopo conferma S3; cleanup di `failed/` a scadenza. |
 | Nome file ripetuto dalla camera | Sovrascrittura | UUID interno per lo staging + chiave S3 con hash+data; il nome originale è solo metadato. |
 | Clock camera errato | Foto nel giorno sbagliato (Fase 2) | Partizione da EXIF `DateTimeOriginal` con fallback alla data di ricezione; entrambe in DB. |

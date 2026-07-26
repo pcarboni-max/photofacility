@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS photos (
 
     -- integrità
     size_bytes        INTEGER,
-    checksum_sha256   TEXT    UNIQUE,                      -- deduplica / idempotenza
+    checksum_sha256   TEXT    NOT NULL UNIQUE,             -- deduplica / idempotenza
     checksum_md5      TEXT,                                -- per Content-MD5 verso S3
     mime_detected     TEXT,                                -- da magic bytes
 
@@ -44,14 +44,36 @@ CREATE TABLE IF NOT EXISTS photos (
     uploaded_at       TEXT,
     partition_date    TEXT,                                -- 'YYYY-MM-DD' per pagina/giorno
 
+    -- NOTA FUSO ORARI: received_at/uploaded_at/created_at/updated_at sono UTC
+    -- (datetime('now') di SQLite è UTC). exif_taken_at e partition_date sono nel
+    -- fuso "di casa" (TIMEZONE, default Europe/Rome), coerenti con la UI Fase 2.
     created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
-    updated_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+    updated_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+
+    -- una stessa chiave S3 non può essere usata da due righe: l'INSERT fallisce
+    -- invece di causare una sovrascrittura silenziosa su S3.
+    UNIQUE (s3_bucket, s3_key)
 );
 
 CREATE INDEX IF NOT EXISTS idx_photos_status         ON photos(status);
 CREATE INDEX IF NOT EXISTS idx_photos_retry          ON photos(status, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_photos_partition_date ON photos(partition_date);
 CREATE INDEX IF NOT EXISTS idx_photos_exif_taken     ON photos(exif_taken_at);
+
+-- Indice parziale per la galleria di Fase 2 (conteggio per giorno + pagina del
+-- giorno ordinata per orario di scatto), limitato alle foto effettivamente su S3.
+CREATE INDEX IF NOT EXISTS idx_photos_gallery
+    ON photos(partition_date, exif_taken_at)
+    WHERE status = 'UPLOADED_S3';
+
+-- updated_at aggiornato automaticamente a ogni UPDATE (il reaper dipende dalla
+-- sua freschezza, a prescindere dal chiamante).
+CREATE TRIGGER IF NOT EXISTS trg_photos_updated_at
+AFTER UPDATE ON photos
+FOR EACH ROW
+BEGIN
+    UPDATE photos SET updated_at = datetime('now') WHERE id = OLD.id;
+END;
 
 -- ------------------------------------------------------------
 -- photo_exif (predisposizione Fase 2): metadati EXIF chiave-valore

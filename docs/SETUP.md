@@ -68,15 +68,30 @@ In Plesk → **Scheduled Tasks** → *Run a PHP script* oppure *Run a command*:
 Ogni minuto è il massimo utile: il `flock` garantisce che i tick non si sovrappongano se
 uno sfora. Il budget `MAX_RUNTIME_SECONDS` (default 50s) tiene ogni tick sotto il minuto.
 
+`bin/ingest.php` usa il **loop-within-cron**: acquisisce il lock una volta e cicla per
+~`LOOP_DURATION_SECONDS` (default 55s), così c'è quasi sempre un processo vivo e la latenza
+scende da ~1 min a pochi secondi. Il `flock` fa uscire subito il tick del minuto successivo
+se il precedente è ancora attivo.
+
 ### 4b. Via URL (solo se la CLI non è disponibile)
 
-Imposta `CRON_TOKEN` nel `.env`, esponi `public/cron.php` nel web root e schedula:
+Imposta `CRON_TOKEN` nel `.env`, esponi `public/cron.php` nel web root e schedula (token
+**via header**, non in querystring, per non lasciarlo nei log):
 
 ```
-* * * * * wget -q -O - "https://tuosito/cron.php?token=IL_TUO_TOKEN"
+* * * * * wget -q -O - --header="X-Cron-Token: IL_TUO_TOKEN" "https://tuosito/cron.php"
 ```
 
-Meno robusto (soggetto a `max_execution_time` del PHP web), da usare come ripiego.
+Meno robusto (soggetto a `max_execution_time` del PHP web) e fa un solo passaggio, non il
+loop: da usare come ripiego.
+
+### 4c. Altri task schedulati (Plesk → Scheduled Tasks)
+
+| Task | Frequenza consigliata | Comando |
+| :--- | :--- | :--- |
+| Backup DB su S3 | giornaliera | `php bin/backup.php` |
+| Manutenzione DB | mensile | `php bin/maintain.php` |
+| Requeue quarantena | "Run Now" all'occorrenza | `php bin/requeue.php` |
 
 ## 5. Client FTP sulla Canon
 
@@ -95,11 +110,29 @@ ingestion, non l'account principale del sito.
 
 ## 6. Sicurezza
 
-- **Credenziali AWS**: usa un utente IAM con policy a minimo privilegio — solo
-  `s3:PutObject` (e `s3:AbortMultipartUpload` se in futuro userai il multipart) sul solo
-  bucket/prefix di destinazione. Niente delete, niente list.
-- **`.env`** mai versionato (già in `.gitignore`) e fuori dal web root.
-- **Account FTP** dedicato e ristretto alla cartella di ingestion.
+**Rischio #1 — layout di deploy.** Il pericolo maggiore è *dove* installi i file: solo
+`public/` va nel document root; `.env`, `db/`, `staging/`, `src/` **fuori**. Verifica pratica
+subito dopo il deploy: prova a scaricare da browser `…/.env` e `…/db/photofacility.sqlite` →
+devono dare **403/404**. In subordine, proteggi quelle cartelle con `.htaccess`
+(`Require all denied`).
+
+- **Bucket S3 privato**: attiva **S3 Block Public Access**. Le foto personali non devono mai
+  essere pubbliche; la lettura in Fase 2 avverrà solo via URL presigned.
+- **Credenziali AWS**: utente IAM a minimo privilegio — `s3:PutObject` (+ `s3:GetObject`/
+  `s3:HeadObject` per la riconciliazione del reaper e per la Fase 2) sul solo bucket/prefix.
+  Niente `Delete`, niente `ListBucket`: una chiave rubata non potrebbe esfiltrare le foto già
+  caricate. Ruota le chiavi periodicamente (Lightsail non ha instance role IAM).
+- **`.env`** mai versionato (già in `.gitignore`), fuori dal web root, permessi `600`.
+- **Account FTP** dedicato e ristretto (chroot) alla sola cartella di ingestion; **FTPS** se
+  disponibile.
+
+## 6bis. Alerting (fortemente consigliato)
+
+Su una pipeline non presidiata, un guasto silenzioso è il rischio peggiore. Imposta almeno
+`ALERT_WEBHOOK_URL` nel `.env` (incoming webhook di Slack/Discord/Telegram-bot o un endpoint
+tuo): riceverai una notifica quando una foto va in **quarantena**, quando il **backlog** cresce
+o invecchia, o quando il **disco** è quasi pieno. Se lo lasci vuoto, gli alert restano solo nel
+log e dovrai controllarli a mano.
 
 ## 7. Manutenzione e quota disco
 
@@ -113,15 +146,14 @@ ingestion, non l'account principale del sito.
 
 ## 8. Verifica del funzionamento
 
-```bash
-# stato complessivo
-php bin/migrate.php          # ristampa i conteggi per stato (idempotente)
+Senza SSH, lo stato si legge senza `tail`:
 
-# log applicativo
-tail -f db/photofacility.log
-```
+- **`db/health.json`** — scritto a ogni ciclo: ultimo run (UTC), conteggi per stato, backlog,
+  MB in staging, spazio disco libero. Scaricalo via **FTP** o esponilo dietro token.
+- **`db/photofacility.log`** — log applicativo, scaricabile via FTP.
+- **`bin/migrate.php`** (via Plesk "Run Now") ristampa i conteggi per stato.
 
 Test sul campo consigliato: scatta e invia una foto dalla Canon, poi **simula una caduta
 Wi-Fi** spegnendo l'access point durante l'invio. Verifica che il file parziale NON venga
-caricato su S3 e che, al ritentativo della camera, la foto arrivi correttamente senza
-duplicati.
+caricato su S3 (finisce in `staging/failed/` o resta in attesa) e che, al ritentativo della
+camera, la foto arrivi correttamente senza duplicati.

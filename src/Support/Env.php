@@ -38,6 +38,15 @@ final class Env
             $key = trim(substr($line, 0, $pos));
             $value = trim(substr($line, $pos + 1));
 
+            // rimuovi un eventuale commento inline (solo se il valore NON è tra apici):
+            // "KEY=val # nota" -> "val". Un '#' dentro apici viene preservato.
+            $isQuoted = strlen($value) >= 2
+                && (($value[0] === '"' && str_ends_with($value, '"'))
+                    || ($value[0] === "'" && str_ends_with($value, "'")));
+            if (!$isQuoted && ($hash = strpos($value, ' #')) !== false) {
+                $value = rtrim(substr($value, 0, $hash));
+            }
+
             // rimuovi eventuali apici
             if (strlen($value) >= 2) {
                 $first = $value[0];

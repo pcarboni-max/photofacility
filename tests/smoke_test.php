@@ -7,8 +7,8 @@ declare(strict_types=1);
  *   php tests/smoke_test.php
  *
  * Richiede un mock S3 in ascolto su 127.0.0.1:8899 (avviato da run_tests.sh).
- * Esercita: validazione integrità, dedup, EXIF/partizione, firma SigV4,
- * streaming cURL, verifica ETag, transizioni di stato nel DB.
+ * Esercita: validazione integrità (incl. trailer FF D9), dedup, EXIF/partizione,
+ * firma SigV4, streaming cURL, verifica ETag, reaper UPLOADING_S3, lock.
  */
 
 use PhotoFacility\App;
@@ -29,80 +29,106 @@ $assert = function (bool $cond, string $label) use (&$failures): void {
     }
 };
 
+// JPEG "valido": header FF D8 FF + payload + trailer EOI FF D9
+$makeJpeg = static fn (string $payload): string => "\xFF\xD8\xFF\xE0" . $payload . "\xFF\xD9";
+
 // --- ambiente di test isolato ---
 $work = sys_get_temp_dir() . '/pf_test_' . getmypid();
 @mkdir($work, 0775, true);
 @mkdir("$work/staging/incoming", 0775, true);
+@mkdir("$work/staging/processing", 0775, true);
 @mkdir("$work/db", 0775, true);
 
 putenv('STAGING_DIR=' . $work . '/staging');
 putenv('DB_PATH=' . $work . '/db/test.sqlite');
 putenv('LOG_FILE=' . $work . '/db/test.log');
 putenv('LOCK_FILE=' . $work . '/db/test.lock');
+putenv('HEALTH_FILE=' . $work . '/db/health.json');
 putenv('S3_BUCKET=test-bucket');
 putenv('S3_REGION=eu-south-1');
 putenv('AWS_ACCESS_KEY_ID=AKIATEST');
 putenv('AWS_SECRET_ACCESS_KEY=secrettest');
 putenv('S3_ENDPOINT=http://127.0.0.1:8899');
 putenv('S3_PATH_STYLE=true');
-putenv('QUIESCENCE_SECONDS=0');   // niente attesa nei test
+putenv('QUIESCENCE_SECONDS=0');
 putenv('DELETE_AFTER_UPLOAD=true');
 
 Env::load($work . '/.env-nonexistent'); // forza il fallback su getenv()
 
 $config = Config::fromEnv($baseDir);
-// NOTA: nessuna chiamata a migrate(): lo schema deve crearsi da solo.
-$app = new App($config);
-$assert(($app->statusReport() === []), 'Auto-migrazione: schema creato al primo avvio (DB vuoto)');
+$app = new App($config); // auto-migrazione nel costruttore
+$assert(($app->statusReport() === []), 'Auto-migrazione: schema creato al primo avvio');
 
 fwrite(STDOUT, "\n== 1. IntegrityValidator ==\n");
 $validator = new IntegrityValidator();
 
-// JPEG valido (header FF D8 FF + payload)
 $jpeg = "$work/staging/incoming/foto1.jpg";
-file_put_contents($jpeg, "\xFF\xD8\xFF\xE0" . str_repeat("CANON-EOS-DATA", 500));
+file_put_contents($jpeg, $makeJpeg(str_repeat('CANON-EOS-DATA', 500)));
 $v = $validator->validate($jpeg);
-$assert($v['ok'] === true, 'JPEG valido riconosciuto');
+$assert($v['ok'] === true, 'JPEG completo (con FF D9) riconosciuto');
 $assert($v['mime'] === 'image/jpeg', 'MIME JPEG corretto');
 $assert(strlen((string) $v['sha256']) === 64, 'SHA-256 calcolato');
 
-// file con estensione foto ma contenuto spazzatura -> firma non riconosciuta
+// JPEG troncato: header valido ma SENZA trailer FF D9
+$trunc = "$work/troncato.jpg";
+file_put_contents($trunc, "\xFF\xD8\xFF\xE0" . str_repeat('X', 2000));
+$vt = $validator->validate($trunc);
+$assert($vt['ok'] === false, 'JPEG troncato (senza FF D9) RIFIUTATO');
+
 $junk = "$work/junk.jpg";
 file_put_contents($junk, 'NON-SONO-UNA-FOTO');
-$vj = $validator->validate($junk);
-$assert($vj['ok'] === false, 'File con firma non valida rifiutato');
+$assert($validator->validate($junk)['ok'] === false, 'File con firma non valida rifiutato');
 
-// CR3 (ISO-BMFF, brand crx )
 $cr3 = "$work/test.cr3";
 file_put_contents($cr3, "\x00\x00\x00\x18" . 'ftyp' . 'crx ' . str_repeat("\x00", 100));
-$vc = $validator->validate($cr3);
-$assert($vc['mime'] === 'image/x-canon-cr3', 'Canon CR3 riconosciuto');
+$assert($validator->validate($cr3)['mime'] === 'image/x-canon-cr3', 'Canon CR3 riconosciuto');
 
 fwrite(STDOUT, "\n== 2. Tick end-to-end (ingest + upload verso mock S3) ==\n");
 $result = $app->runTick();
 $assert(($result['ingest']['admitted'] ?? 0) === 1, 'Una foto ammessa alla coda');
 $assert(($result['upload']['uploaded'] ?? 0) === 1, 'Una foto caricata su S3 (mock)');
-
 $counts = $app->statusReport();
 $assert(($counts['UPLOADED_S3'] ?? 0) === 1, 'Stato DB = UPLOADED_S3');
 $assert(!is_file($jpeg), 'File staging cancellato dopo conferma upload');
+$assert(is_file("$work/db/health.json"), 'health.json scritto');
 
 fwrite(STDOUT, "\n== 3. Idempotenza / deduplica ==\n");
-// stessa foto (stesso contenuto) di nuovo
-file_put_contents("$work/staging/incoming/foto1_ricaricata.jpg", "\xFF\xD8\xFF\xE0" . str_repeat("CANON-EOS-DATA", 500));
-$result2 = $app->runTick();
-$assert(($result2['ingest']['skipped'] ?? 0) === 1, 'Duplicato riconosciuto e saltato');
-$counts2 = $app->statusReport();
-$assert(($counts2['UPLOADED_S3'] ?? 0) === 1, 'Nessun duplicato in DB');
+file_put_contents("$work/staging/incoming/foto1_bis.jpg", $makeJpeg(str_repeat('CANON-EOS-DATA', 500)));
+$r2 = $app->runTick();
+$assert(($r2['ingest']['skipped'] ?? 0) === 1, 'Duplicato riconosciuto e saltato');
+$assert(($app->statusReport()['UPLOADED_S3'] ?? 0) === 1, 'Nessun duplicato in DB');
 
-fwrite(STDOUT, "\n== 4. Lock anti-sovrapposizione ==\n");
+fwrite(STDOUT, "\n== 4. Reaper UPLOADING_S3 (recupero dopo crash) ==\n");
+// inseriamo a mano un record bloccato in UPLOADING_S3 con updated_at vecchio
+$pdo = new PDO('sqlite:' . $work . '/db/test.sqlite');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$stuckFile = "$work/staging/processing/stuck.jpg";
+file_put_contents($stuckFile, $makeJpeg(str_repeat('STUCK', 300)));
+$sha = hash_file('sha256', $stuckFile);
+$md5 = hash_file('md5', $stuckFile);
+$pdo->prepare(
+    "INSERT INTO photos (uuid, original_filename, status, size_bytes, checksum_sha256, checksum_md5,
+        mime_detected, staging_path, s3_bucket, s3_key, partition_date, received_at, updated_at)
+     VALUES ('stuck-uuid','stuck.jpg','UPLOADING_S3',:sz,:sha,:md5,'image/jpeg',:path,
+        'test-bucket','2020/01/01/stuck.jpg','2020-01-01','2020-01-01 00:00:00','2020-01-01 00:00:00')"
+)->execute([':sz' => filesize($stuckFile), ':sha' => $sha, ':md5' => $md5, ':path' => $stuckFile]);
+
+$app->runTick(); // il reaper gira a inizio tick, poi il drain carica
+$row = $pdo->query("SELECT status FROM photos WHERE uuid='stuck-uuid'")->fetch(PDO::FETCH_ASSOC);
+$assert(($row['status'] ?? '') === 'UPLOADED_S3', 'Record orfano recuperato dal reaper e caricato');
+
+fwrite(STDOUT, "\n== 5. Requeue dalla dead-letter ==\n");
+$pdo->exec("UPDATE photos SET status='QUARANTINE' WHERE uuid='stuck-uuid'");
+$n = $app->requeue(['QUARANTINE']);
+$assert($n === 1, 'Requeue riporta 1 foto in coda');
+$assert(($pdo->query("SELECT status FROM photos WHERE uuid='stuck-uuid'")->fetchColumn()) === 'PENDING_S3', 'Stato tornato PENDING_S3');
+
+fwrite(STDOUT, "\n== 6. Lock anti-sovrapposizione ==\n");
 $lock = new \PhotoFacility\Support\Lock($config->lockFile);
 $assert($lock->acquire() === true, 'Lock acquisito');
-$r3 = $app->runTick();
-$assert(($r3['skipped_locked'] ?? false) === true, 'Tick saltato mentre il lock è attivo');
+$assert(($app->runTick()['skipped_locked'] ?? false) === true, 'Tick saltato mentre il lock è attivo');
 $lock->release();
 
-// cleanup
 exec('rm -rf ' . escapeshellarg($work));
 
 fwrite(STDOUT, "\n");

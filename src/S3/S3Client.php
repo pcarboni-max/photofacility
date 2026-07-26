@@ -30,7 +30,8 @@ final class S3Client
     /**
      * Carica un file con PutObject.
      *
-     * @return array{ok:bool, status:int, etag:?string, error:?string}
+     * @param int $timeout secondi max per il trasferimento (allineato al budget del tick)
+     * @return array{ok:bool, status:int, etag:?string, sse:?string, error:?string, retriable:bool}
      */
     public function putObject(
         string $bucket,
@@ -38,49 +39,90 @@ final class S3Client
         string $filePath,
         string $sha256Hex,
         string $md5Base64,
-        string $contentType
+        string $contentType,
+        int $timeout = 120
     ): array {
         $size = filesize($filePath);
         if ($size === false) {
-            return ['ok' => false, 'status' => 0, 'etag' => null, 'error' => 'file non leggibile'];
+            return ['ok' => false, 'status' => 0, 'etag' => null, 'sse' => null, 'error' => 'file non leggibile', 'retriable' => false];
         }
 
         [$host, $urlPath, $baseUrl] = $this->resolveEndpoint($bucket, $key);
 
+        $insecure = $this->insecureNonLoopback($baseUrl);
+        if ($insecure !== null) {
+            return ['ok' => false, 'status' => 0, 'etag' => null, 'sse' => null, 'error' => $insecure, 'retriable' => false];
+        }
+
+        $curlHeaders = $this->signedHeaders('PUT', $host, $urlPath, $sha256Hex, [
+            'content-md5' => $md5Base64,
+            'content-type' => $contentType,
+        ]);
+
+        return $this->send('PUT', $baseUrl, $curlHeaders, $filePath, $size, $timeout);
+    }
+
+    /**
+     * HeadObject: verifica esistenza/dimensione di un oggetto (riconciliazione).
+     * @return array{ok:bool, exists:bool, status:int, size:?int}
+     */
+    public function headObject(string $bucket, string $key, int $timeout = 15): array
+    {
+        [$host, $urlPath, $baseUrl] = $this->resolveEndpoint($bucket, $key);
+        if ($this->insecureNonLoopback($baseUrl) !== null) {
+            return ['ok' => false, 'exists' => false, 'status' => 0, 'size' => null];
+        }
+        // per HEAD il payload è vuoto → hash della stringa vuota
+        $emptyHash = hash('sha256', '');
+        $curlHeaders = $this->signedHeaders('HEAD', $host, $urlPath, $emptyHash, []);
+
+        $res = $this->send('HEAD', $baseUrl, $curlHeaders, null, 0, $timeout);
+        $exists = $res['status'] >= 200 && $res['status'] < 300;
+        return [
+            'ok' => $res['ok'] || $res['status'] === 404,
+            'exists' => $exists,
+            'status' => $res['status'],
+            'size' => $exists ? ($res['contentLength'] ?? null) : null,
+        ];
+    }
+
+    /**
+     * Costruisce gli header firmati SigV4 per una richiesta.
+     * @param array<string,string> $extra header aggiuntivi (lowercase) da firmare
+     * @return list<string> header pronti per cURL (Authorization incluso)
+     */
+    private function signedHeaders(string $method, string $host, string $urlPath, string $payloadHash, array $extra): array
+    {
         $amzDate = gmdate('Ymd\THis\Z');
         $dateStamp = gmdate('Ymd');
 
-        $headers = [
+        $headers = array_merge($extra, [
             'host' => $host,
-            'content-md5' => $md5Base64,
-            'content-type' => $contentType,
-            'x-amz-content-sha256' => $sha256Hex,
+            'x-amz-content-sha256' => $payloadHash,
             'x-amz-date' => $amzDate,
-        ];
+        ]);
         if ($this->sessionToken !== null && $this->sessionToken !== '') {
             $headers['x-amz-security-token'] = $this->sessionToken;
         }
 
-        // --- Canonical request ---
         ksort($headers);
         $canonicalHeaders = '';
-        $signedHeaders = [];
+        $signed = [];
         foreach ($headers as $name => $value) {
             $canonicalHeaders .= $name . ':' . trim($value) . "\n";
-            $signedHeaders[] = $name;
+            $signed[] = $name;
         }
-        $signedHeadersStr = implode(';', $signedHeaders);
+        $signedHeadersStr = implode(';', $signed);
 
         $canonicalRequest = implode("\n", [
-            'PUT',
+            $method,
             $urlPath,
-            '', // query string vuota
+            '',
             $canonicalHeaders,
             $signedHeadersStr,
-            $sha256Hex, // payload signed (hash già calcolato in validazione)
+            $payloadHash,
         ]);
 
-        // --- String to sign ---
         $scope = "{$dateStamp}/{$this->region}/s3/aws4_request";
         $stringToSign = implode("\n", [
             'AWS4-HMAC-SHA256',
@@ -89,7 +131,6 @@ final class S3Client
             hash('sha256', $canonicalRequest),
         ]);
 
-        // --- Signing key + signature ---
         $signature = hash_hmac('sha256', $stringToSign, $this->signingKey($dateStamp), false);
 
         $authorization = sprintf(
@@ -100,17 +141,14 @@ final class S3Client
             $signature
         );
 
-        // --- HTTP headers per cURL ---
         $curlHeaders = ["Authorization: {$authorization}"];
         foreach ($headers as $name => $value) {
-            // 'host' lo imposta cURL; gli altri li passiamo espliciti
             if ($name === 'host') {
-                continue;
+                continue; // lo imposta cURL
             }
             $curlHeaders[] = $this->headerName($name) . ': ' . $value;
         }
-
-        return $this->send($baseUrl, $filePath, $size, $curlHeaders);
+        return $curlHeaders;
     }
 
     private function signingKey(string $dateStamp): string
@@ -122,7 +160,7 @@ final class S3Client
     }
 
     /**
-     * @return array{0:string,1:string,2:string} [host, canonicalUriPath, fullUrl]
+     * @return array{0:string,1:string,2:string} [hostConPorta, canonicalUriPath, fullUrl]
      */
     private function resolveEndpoint(string $bucket, string $key): array
     {
@@ -135,18 +173,20 @@ final class S3Client
             $port = isset($parsed['port']) ? ':' . $parsed['port'] : '';
 
             if ($this->usePathStyle) {
-                $host = $epHost;
+                // la porta DEVE far parte dell'host firmato: cURL la include
+                // nell'header Host, quindi deve combaciare con la firma.
+                $host = $epHost . $port;
                 $uriPath = '/' . rawurlencode($bucket) . '/' . $encodedKey;
                 $url = "{$scheme}://{$epHost}{$port}/{$bucket}/{$encodedKey}";
             } else {
-                $host = $bucket . '.' . $epHost;
+                $host = $bucket . '.' . $epHost . $port;
                 $uriPath = '/' . $encodedKey;
-                $url = "{$scheme}://{$host}{$port}/{$encodedKey}";
+                $url = "{$scheme}://{$bucket}.{$epHost}{$port}/{$encodedKey}";
             }
             return [$host, $uriPath, $url];
         }
 
-        // AWS standard
+        // AWS standard (sempre HTTPS, nessuna porta)
         if ($this->usePathStyle) {
             $host = "s3.{$this->region}.amazonaws.com";
             $uriPath = '/' . rawurlencode($bucket) . '/' . $encodedKey;
@@ -159,7 +199,24 @@ final class S3Client
         return [$host, $uriPath, $url];
     }
 
-    /** Codifica ogni segmento del key preservando gli slash. */
+    /**
+     * Rifiuta http:// verso host NON loopback: l'header Authorization firmato
+     * viaggerebbe in chiaro. http è tollerato solo per mock/MinIO locale.
+     * @return string|null messaggio d'errore se insicuro, null se ok.
+     */
+    private function insecureNonLoopback(string $url): ?string
+    {
+        $p = parse_url($url);
+        if (($p['scheme'] ?? '') !== 'http') {
+            return null;
+        }
+        $host = $p['host'] ?? '';
+        if (in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
+            return null;
+        }
+        return "endpoint http:// non-loopback rifiutato ({$host}): la firma viaggerebbe in chiaro. Usa https.";
+    }
+
     private function encodeKeyPath(string $key): string
     {
         $segments = explode('/', $key);
@@ -168,7 +225,6 @@ final class S3Client
 
     private function headerName(string $lower): string
     {
-        // ricostruisce il case canonico degli header noti
         return match ($lower) {
             'content-md5' => 'Content-MD5',
             'content-type' => 'Content-Type',
@@ -181,26 +237,23 @@ final class S3Client
 
     /**
      * @param list<string> $curlHeaders
-     * @return array{ok:bool, status:int, etag:?string, error:?string}
+     * @return array{ok:bool, status:int, etag:?string, sse:?string, error:?string, retriable:bool, contentLength?:?int}
      */
-    private function send(string $url, string $filePath, int $size, array $curlHeaders): array
+    private function send(string $method, string $url, array $curlHeaders, ?string $filePath, int $size, int $timeout): array
     {
-        $fh = fopen($filePath, 'rb');
-        if ($fh === false) {
-            return ['ok' => false, 'status' => 0, 'etag' => null, 'error' => 'impossibile aprire il file'];
-        }
-
         $responseHeaders = [];
         $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_PUT => true,
-            CURLOPT_INFILE => $fh,
-            CURLOPT_INFILESIZE => $size,
+
+        $opts = [
             CURLOPT_HTTPHEADER => $curlHeaders,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CONNECTTIMEOUT => 15,
-            CURLOPT_TIMEOUT => 300,
+            CURLOPT_TIMEOUT => max(5, $timeout),
             CURLOPT_FAILONERROR => false,
+            // TLS esplicito e protocolli limitati a HTTP(S): niente file://, ftp://, ecc.
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
             CURLOPT_HEADERFUNCTION => function ($curl, $line) use (&$responseHeaders) {
                 $parts = explode(':', $line, 2);
                 if (count($parts) === 2) {
@@ -208,26 +261,52 @@ final class S3Client
                 }
                 return strlen($line);
             },
-        ]);
+        ];
+
+        $fh = null;
+        if ($method === 'PUT') {
+            $fh = fopen((string) $filePath, 'rb');
+            if ($fh === false) {
+                return ['ok' => false, 'status' => 0, 'etag' => null, 'sse' => null, 'error' => 'impossibile aprire il file', 'retriable' => false];
+            }
+            $opts[CURLOPT_PUT] = true;
+            $opts[CURLOPT_INFILE] = $fh;
+            $opts[CURLOPT_INFILESIZE] = $size;
+        } elseif ($method === 'HEAD') {
+            $opts[CURLOPT_NOBODY] = true;
+        }
+
+        curl_setopt_array($ch, $opts);
 
         $body = curl_exec($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlErr = curl_error($ch);
-        curl_close($ch);
-        fclose($fh);
+        $errno = curl_errno($ch);
+        if ($fh !== null) {
+            fclose($fh);
+        }
+        // curl_close() è deprecato (no-op) da PHP 8.5: la risorsa si libera da sola.
+
+        $sse = $responseHeaders['x-amz-server-side-encryption'] ?? null;
+        $contentLength = isset($responseHeaders['content-length']) ? (int) $responseHeaders['content-length'] : null;
 
         if ($body === false || $curlErr !== '') {
-            return ['ok' => false, 'status' => $status, 'etag' => null, 'error' => "cURL: {$curlErr}"];
+            // errori di rete/timeout sono ritentabili
+            return [
+                'ok' => false, 'status' => $status, 'etag' => null, 'sse' => $sse,
+                'error' => "cURL({$errno}): {$curlErr}", 'retriable' => true, 'contentLength' => $contentLength,
+            ];
         }
 
         if ($status >= 200 && $status < 300) {
             $etag = isset($responseHeaders['etag']) ? trim($responseHeaders['etag'], '"') : null;
-            return ['ok' => true, 'status' => $status, 'etag' => $etag, 'error' => null];
+            return ['ok' => true, 'status' => $status, 'etag' => $etag, 'sse' => $sse, 'error' => null, 'retriable' => false, 'contentLength' => $contentLength];
         }
 
-        // S3 restituisce XML con <Code> e <Message> in caso di errore
         $err = is_string($body) ? $this->parseS3Error($body) : 'errore sconosciuto';
-        return ['ok' => false, 'status' => $status, 'etag' => null, 'error' => "HTTP {$status}: {$err}"];
+        // 5xx e 429 ritentabili; 4xx (403 credenziali, 400 richiesta) NO.
+        $retriable = $status >= 500 || $status === 429;
+        return ['ok' => false, 'status' => $status, 'etag' => null, 'sse' => $sse, 'error' => "HTTP {$status}: {$err}", 'retriable' => $retriable, 'contentLength' => $contentLength];
     }
 
     private function parseS3Error(string $xml): string

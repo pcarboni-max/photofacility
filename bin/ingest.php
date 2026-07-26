@@ -4,11 +4,13 @@
 declare(strict_types=1);
 
 /**
- * Entry point CLI dell'ingestion. Da eseguire via cron:
+ * Entry point CLI dell'ingestion. Da eseguire via cron (Plesk Scheduled Tasks):
  *
- *   * * * * * /usr/bin/php /path/photofacility/bin/ingest.php >> /path/cron.out 2>&1
+ *   * * * * * /usr/bin/php /path/photofacility/bin/ingest.php >> /path/db/cron.out 2>&1
  *
- * Esegue un singolo "tick": ammette i file completi e svuota la coda S3.
+ * Esegue il "loop-within-cron": acquisisce il lock una volta e cicla per
+ * ~LOOP_DURATION_SECONDS facendo micro-batch (ammissione file completi + drain
+ * coda S3), poi esce prima del tick successivo. Il flock evita accavallamenti.
  */
 
 use PhotoFacility\App;
@@ -23,14 +25,14 @@ Env::load($baseDir . '/.env');
 try {
     $config = Config::fromEnv($baseDir);
     $app = new App($config);
-    $result = $app->runTick();
+    $result = $app->runLoop();
 
     if (($result['skipped_locked'] ?? false) === true) {
-        fwrite(STDOUT, "Tick saltato: lock attivo.\n");
+        fwrite(STDOUT, "Loop saltato: lock attivo.\n");
         exit(0);
     }
 
-    fwrite(STDOUT, 'Tick OK: ' . json_encode($result, JSON_UNESCAPED_SLASHES) . "\n");
+    fwrite(STDOUT, 'Loop OK: ' . json_encode($result, JSON_UNESCAPED_SLASHES) . "\n");
     exit(0);
 } catch (\Throwable $e) {
     fwrite(STDERR, 'ERRORE FATALE: ' . $e->getMessage() . "\n" . $e->getTraceAsString() . "\n");
