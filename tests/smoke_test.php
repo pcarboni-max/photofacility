@@ -147,6 +147,17 @@ $assert($lock->acquire() === true, 'Lock acquisito');
 $assert(($app->runTick()['skipped_locked'] ?? false) === true, 'Tick saltato mentre il lock è attivo');
 $lock->release();
 
+fwrite(STDOUT, "\n== 7. Validazione HOME_TZ (R5) ==\n");
+putenv('HOME_TZ=Foo/Bar'); // zona inesistente
+$threw = false;
+try {
+    Config::fromEnv($baseDir);
+} catch (\RuntimeException) {
+    $threw = true;
+}
+$assert($threw, 'HOME_TZ non valido fa fallire l\'avvio con errore chiaro');
+putenv('HOME_TZ'); // ripristina (torna al default)
+
 exec('rm -rf ' . escapeshellarg($work));
 
 fwrite(STDOUT, "\n");

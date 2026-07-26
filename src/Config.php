@@ -38,7 +38,7 @@ final class Config
         public readonly bool $s3PathStyle,
 
         // comportamento ingestion / upload
-        public readonly string $timezone,
+        public readonly string $homeTz,
         public readonly int $quiescenceSeconds,
         public readonly int $maxRuntimeSeconds,
         public readonly int $loopDurationSeconds,
@@ -86,7 +86,7 @@ final class Config
             s3Endpoint: Env::get('S3_ENDPOINT'),
             s3PathStyle: Env::bool('S3_PATH_STYLE', false),
 
-            timezone: Env::get('TIMEZONE', 'Europe/Rome') ?? 'Europe/Rome',
+            homeTz: self::validTimezone(Env::get('HOME_TZ', 'Europe/Rome') ?? 'Europe/Rome'),
             quiescenceSeconds: Env::int('QUIESCENCE_SECONDS', 30),
             maxRuntimeSeconds: Env::int('MAX_RUNTIME_SECONDS', 55),
             loopDurationSeconds: Env::int('LOOP_DURATION_SECONDS', 55),
@@ -108,6 +108,21 @@ final class Config
 
             debug: Env::bool('DEBUG', false),
         );
+    }
+
+    /**
+     * Valida HOME_TZ: deve essere una zona IANA CON NOME (es. Europe/Rome), che
+     * gestisce l'ora legale. Un offset fisso (+01:00) è vietato e un nome non
+     * valido fa fallire subito l'avvio con un errore chiaro.
+     */
+    private static function validTimezone(string $tz): string
+    {
+        if (!in_array($tz, \DateTimeZone::listIdentifiers(), true)) {
+            throw new \RuntimeException(
+                "HOME_TZ non valido: '{$tz}'. Usa una zona IANA con nome (es. Europe/Rome), non un offset fisso."
+            );
+        }
+        return $tz;
     }
 
     /**

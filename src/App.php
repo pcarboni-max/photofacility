@@ -27,7 +27,7 @@ use PhotoFacility\Support\Notifier;
  *
  * Fuso orari: al bootstrap fissiamo UTC per coerenza tra log e timestamp DB;
  * il raggruppamento per giorno (partition_date) usa esplicitamente il fuso "di
- * casa" (config->timezone) dentro ExifExtractor.
+ * casa" (config->homeTz) dentro ExifExtractor.
  */
 final class App
 {
@@ -191,7 +191,7 @@ final class App
             $this->config,
             $this->repo,
             new IntegrityValidator(),
-            new ExifExtractor($this->config->timezone),
+            new ExifExtractor($this->config->homeTz),
             $this->log,
         );
         $uploader = new Uploader($client, $this->repo, $this->config, $this->log, $this->notifier);
