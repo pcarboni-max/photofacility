@@ -34,7 +34,7 @@ interface StorageTarget
 
     /**
      * Verifica esistenza/dimensione di un oggetto (riconciliazione / reaper).
-     * @return array{ok:bool, exists:bool, status:int, size:?int}
+     * @return array{ok:bool, exists:bool, status:int, size:?int, error:?string}
      */
     public function headObject(string $bucket, string $key, int $timeout = 15): array;
 

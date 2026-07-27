@@ -86,7 +86,7 @@ final class S3Client implements StorageTarget
 
     /**
      * HeadObject: verifica esistenza/dimensione di un oggetto (riconciliazione).
-     * @return array{ok:bool, exists:bool, status:int, size:?int}
+     * @return array{ok:bool, exists:bool, status:int, size:?int, error:?string}
      */
     public function headObject(string $bucket, string $key, int $timeout = 15): array
     {
@@ -105,6 +105,7 @@ final class S3Client implements StorageTarget
             'exists' => $exists,
             'status' => $res['status'],
             'size' => $exists ? ($res['contentLength'] ?? null) : null,
+            'error' => $res['error'] ?? null,
         ];
     }
 
@@ -325,7 +326,20 @@ final class S3Client implements StorageTarget
             return ['ok' => true, 'status' => $status, 'etag' => $etag, 'sse' => $sse, 'error' => null, 'retriable' => false, 'contentLength' => $contentLength];
         }
 
-        $err = is_string($body) ? $this->parseS3Error($body) : 'errore sconosciuto';
+        // Le richieste HEAD non hanno corpo: il codice d'errore di S3 arriva
+        // negli header x-amz-error-code / x-amz-error-message. Usiamoli come
+        // fallback quando il body è vuoto (es. errori su HeadObject).
+        $err = is_string($body) ? $this->parseS3Error($body) : '';
+        if ($err === '' && isset($responseHeaders['x-amz-error-code'])) {
+            $err = trim($responseHeaders['x-amz-error-code'] . ' ' . ($responseHeaders['x-amz-error-message'] ?? ''));
+        }
+        // AWS suggerisce spesso la region corretta in questo header
+        if (isset($responseHeaders['x-amz-bucket-region'])) {
+            $err = trim($err . ' [region bucket: ' . $responseHeaders['x-amz-bucket-region'] . ']');
+        }
+        if ($err === '') {
+            $err = 'errore sconosciuto (nessun dettaglio nella risposta)';
+        }
         // 5xx e 429 ritentabili; 4xx (403 credenziali, 400 richiesta) NO.
         $retriable = $status >= 500 || $status === 429;
         return ['ok' => false, 'status' => $status, 'etag' => null, 'sse' => $sse, 'error' => "HTTP {$status}: {$err}", 'retriable' => $retriable, 'contentLength' => $contentLength];

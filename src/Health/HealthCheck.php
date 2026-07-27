@@ -262,16 +262,25 @@ final class HealthCheck
         $probeKey = ($this->config->s3Prefix !== '' ? rtrim($this->config->s3Prefix, '/') . '/' : '') . '.healthcheck-probe';
         $head = $client->headObject((string) $this->config->s3Bucket, $probeKey, 10);
         $status = (int) $head['status'];
+        $err = (string) ($head['error'] ?? '');
 
         if ($status === 404 || ($status >= 200 && $status < 300)) {
             $this->add($cat, 'Connettività', self::OK, "bucket raggiungibile, autenticazione OK (HTTP {$status})");
         } elseif ($status === 403) {
-            $this->add($cat, 'Connettività', self::FAIL, 'HTTP 403: credenziali o permessi IAM insufficienti (serve s3:GetObject/HeadObject sul prefisso)');
+            $this->add($cat, 'Connettività', self::FAIL, "HTTP 403: credenziali o permessi IAM insufficienti (serve s3:GetObject/HeadObject sul prefisso). {$err}");
+        } elseif ($status === 400) {
+            $this->add($cat, 'Connettività', self::FAIL, "HTTP 400: richiesta rifiutata. Causa tipica: S3_REGION non corrisponde alla region del bucket, oppure S3_ENDPOINT/S3_PATH_STYLE errati. Dettaglio S3: {$err}");
+        } elseif ($status === 301) {
+            $this->add($cat, 'Connettività', self::FAIL, "HTTP 301: bucket in un'altra region. Correggi S3_REGION. {$err}");
         } elseif ($status === 0) {
-            $this->add($cat, 'Connettività', self::FAIL, 'bucket irraggiungibile (rete/DNS/TLS o region errata)');
+            $this->add($cat, 'Connettività', self::FAIL, 'bucket irraggiungibile (rete/DNS/TLS o hostname errato)');
         } else {
-            $this->add($cat, 'Connettività', self::WARN, "risposta inattesa: HTTP {$status}");
+            $this->add($cat, 'Connettività', self::WARN, "risposta inattesa: HTTP {$status}. {$err}");
         }
+        // mostra sempre la config S3 in uso, per confronto rapido
+        $this->add($cat, 'Config S3 in uso', self::OK, 'region=' . $this->config->s3Region
+            . ', path_style=' . ($this->config->s3PathStyle ? 'sì' : 'no')
+            . ', endpoint=' . ($this->config->s3Endpoint ?: 'AWS standard'));
     }
 
     // -------------------------------------------------------------------
