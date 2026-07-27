@@ -39,12 +39,19 @@ final class Env
             $value = trim(substr($line, $pos + 1));
 
             // rimuovi un eventuale commento inline (solo se il valore NON è tra apici):
-            // "KEY=val # nota" -> "val". Un '#' dentro apici viene preservato.
+            //   "KEY=val # nota"  -> "val"
+            //   "KEY=   # nota"   -> ""   (valore vuoto + solo commento)
+            // Un '#' NON preceduto da spazio e non iniziale viene preservato
+            // (es. un frammento di URL "https://x#y" resta intatto).
             $isQuoted = strlen($value) >= 2
                 && (($value[0] === '"' && str_ends_with($value, '"'))
                     || ($value[0] === "'" && str_ends_with($value, "'")));
-            if (!$isQuoted && ($hash = strpos($value, ' #')) !== false) {
-                $value = rtrim(substr($value, 0, $hash));
+            if (!$isQuoted) {
+                if (str_starts_with($value, '#')) {
+                    $value = ''; // l'intero valore è un commento
+                } elseif (preg_match('/\s#/', $value, $mm, PREG_OFFSET_CAPTURE)) {
+                    $value = rtrim(substr($value, 0, $mm[0][1]));
+                }
             }
 
             // rimuovi eventuali apici

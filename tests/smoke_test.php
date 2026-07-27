@@ -163,6 +163,15 @@ try {
 $assert($threw, 'HOME_TZ non valido fa fallire l\'avvio con errore chiaro');
 putenv('HOME_TZ'); // ripristina (torna al default)
 
+fwrite(STDOUT, "\n== 8. Parser .env (commenti inline) ==\n");
+$envTmp = "$work/.env-parsercheck";
+file_put_contents($envTmp, "A=val # nota\nB=   # solo commento\nC=https://x/y#frag\nD=#tutto commento\n");
+Env::load($envTmp);
+$assert(Env::get('A') === 'val', 'commento inline dopo valore rimosso');
+$assert(Env::get('B') === '', 'valore vuoto + commento inline = vuoto (bug InvalidToken)');
+$assert(Env::get('C') === 'https://x/y#frag', '# senza spazio preservato (URL con frammento)');
+$assert(Env::get('D') === '', 'valore composto solo dal commento = vuoto');
+
 exec('rm -rf ' . escapeshellarg($work));
 
 fwrite(STDOUT, "\n");
