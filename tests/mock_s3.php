@@ -9,6 +9,14 @@ declare(strict_types=1);
  */
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+
+// HEAD: simula "oggetto non trovato" (chiave sonda / reaper). Raggiungibile +
+// auth OK ma chiave assente = 404, come farebbe S3 con credenziali valide.
+if ($method === 'HEAD') {
+    http_response_code(404);
+    return;
+}
+
 if ($method !== 'PUT') {
     http_response_code(405);
     echo 'Method Not Allowed';

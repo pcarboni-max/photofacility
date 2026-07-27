@@ -59,6 +59,9 @@ final class Config
         public readonly int $backlogAgeAlertMinutes,
         public readonly int $stagingAlertMb,
 
+        // pagina di diagnostica (public/health.php)
+        public readonly ?string $healthToken,
+
         public readonly bool $debug,
     ) {
     }
@@ -105,6 +108,8 @@ final class Config
             backlogAlertThreshold: Env::int('BACKLOG_ALERT_THRESHOLD', 200),
             backlogAgeAlertMinutes: Env::int('BACKLOG_AGE_ALERT_MINUTES', 30),
             stagingAlertMb: Env::int('STAGING_ALERT_MB', 5120),
+
+            healthToken: Env::get('HEALTH_TOKEN'),
 
             debug: Env::bool('DEBUG', false),
         );

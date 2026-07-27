@@ -71,7 +71,10 @@ bin/migrate.php       applica lo schema DB (opzionale: è anche automatico)
 bin/requeue.php       ripesca le foto da QUARANTINE/ERROR
 bin/maintain.php      pruning eventi + checkpoint WAL + VACUUM
 bin/backup.php        backup del DB SQLite su S3 (metadati/tag Fase 2)
+bin/doctor.php        diagnostica completa da CLI (bucket, DB, cron, disco...)
+public/health.php     stessa diagnostica via web (token, read-only)
 src/Config.php        configurazione da .env (config DB disaccoppiata da S3)
+src/Health/           HealthCheck: diagnostica end-to-end del sistema
 src/App.php           orchestrazione (loop, reaper, health, alerting)
 src/Ingest/           validazione integrità, EXIF, scansione + freno disco pieno
 src/S3/               client S3 SigV4 + uploader con retry/quarantena
@@ -91,4 +94,13 @@ Tutte via Plesk → Scheduled Tasks ("Run Now" per le azioni one-off). Vedi
 | Ripescare foto in quarantena | `php bin/requeue.php` |
 | Manutenzione DB (mensile) | `php bin/maintain.php` |
 | Backup DB su S3 (giornaliero) | `php bin/backup.php` |
-| Stato/health | scarica `db/health.json` via FTP |
+| Diagnostica completa | `php bin/doctor.php` (o `--json`) |
+| Stato/health rapido | scarica `db/health.json` via FTP |
+
+### Diagnostica
+
+`bin/doctor.php` (CLI) e `public/health.php` (web, protetta da `HEALTH_TOKEN`) eseguono lo
+**stesso controllo completo**: versione/estensioni PHP, config e credenziali (senza mai
+esporre i segreti), permessi filesystem, spazio disco, database (schema, WAL, integrità,
+backlog, quarantena, upload bloccati), **connettività S3** (read-only, least-privilege) e
+stato del cron. Verdetto complessivo: `SOLID` / `WARNINGS` / `CRITICAL`.

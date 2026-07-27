@@ -4,19 +4,24 @@ Guida al deploy della Fase 1 in un ambiente con **solo cron** e Composer via Ple
 
 ## 1. Layout dei file: cosa esporre e cosa NO
 
-Regola di sicurezza fondamentale: **nulla di questo progetto deve stare nel document root**.
-L'ingestion gira solo via cron CLI: non c'è alcuna superficie web da esporre. Tieni l'intero
-progetto (`src/`, `bin/`, `db/`, `.env`, `staging/`) **fuori** dalla cartella web.
+Regola di sicurezza fondamentale: **l'unico file esponibile sul web è `public/health.php`**
+(la diagnostica, e solo se vuoi usarla via browser). Tutto il resto (`src/`, `bin/`, `db/`,
+`.env`, `staging/`) deve stare **fuori** dal document root. L'ingestion gira solo via cron CLI
+e non espone nulla.
 
 Layout consigliato:
 
 ```
 /var/www/vhosts/tuosito/
 ├── photofacility/          ← FUORI dal document root
-│   ├── src/  bin/  db/  staging/  .env
+│   ├── src/  bin/  db/  staging/  .env  public/
 │   └── ...
-└── httpdocs/               ← document root (web) — non contiene nulla del progetto
+└── httpdocs/               ← document root (web)
+    └── health.php          ← (opzionale) include ../photofacility/public/health.php
 ```
+
+Se non ti serve la diagnostica via browser, **non esporre nulla**: usa `bin/doctor.php` da
+Plesk "Run Now". La pagina web è solo una comodità.
 
 > ⚠️ Se il tuo hosting ti costringe a mettere tutto sotto `httpdocs/`, proteggi le cartelle
 > con un `.htaccess` (`Require all denied`) su `src/`, `bin/`, `db/`, `staging/`, `.env`.
@@ -64,8 +69,9 @@ uno sfora.
 scende da ~1 min a pochi secondi. Il `flock` fa uscire subito il tick del minuto successivo
 se il precedente è ancora attivo.
 
-> Non esiste un entry-point web: l'ingestion gira **solo** via CLI. Questo elimina l'unica
-> superficie HTTP (e con essa token nei log, timeout del web server, info-disclosure).
+> L'**ingestion** gira **solo** via CLI: nessun entry-point web la innesca (niente token nei
+> log, timeout del web server, ecc.). L'unica pagina web esistente è la **diagnostica**
+> read-only `public/health.php` (§8), opzionale e protetta da token.
 
 ### 4c. Altri task schedulati (Plesk → Scheduled Tasks)
 
@@ -126,14 +132,24 @@ log e dovrai controllarli a mano.
 - Le foto in stato `QUARANTINE` sono quelle che hanno esaurito i tentativi di upload:
   vanno ispezionate a mano (probabile problema di credenziali/permessi S3).
 
-## 8. Verifica del funzionamento
+## 8. Verifica del funzionamento e diagnostica
 
 Senza SSH, lo stato si legge senza `tail`:
 
-- **`db/health.json`** — scritto a ogni ciclo: ultimo run (UTC), conteggi per stato, backlog,
-  MB in staging, spazio disco libero. Scaricalo via **FTP** o esponilo dietro token.
+- **Diagnostica completa** — `bin/doctor.php` (Plesk "Run Now") oppure `public/health.php` via
+  browser: controlla versione/estensioni PHP, config e credenziali (senza esporre i segreti),
+  permessi, disco, database (schema, WAL, **integrità**, backlog, quarantena, upload bloccati),
+  **connettività S3** (read-only) e stato del cron. Verdetto: `SOLID` / `WARNINGS` / `CRITICAL`.
+  - Web: imposta `HEALTH_TOKEN` nel `.env`, poi
+    `https://tuosito/health.php` (HTML) o `?format=json` (per monitor esterni tipo UptimeRobot).
+    Passa il token via header `X-Health-Token` (evita la querystring nei log). La pagina
+    risponde **HTTP 503** se il verdetto è `CRITICAL`.
+- **`db/health.json`** — scritto a ogni ciclo (ultimo run UTC, conteggi, backlog, disco).
 - **`db/photofacility.log`** — log applicativo, scaricabile via FTP.
-- **`bin/migrate.php`** (via Plesk "Run Now") ristampa i conteggi per stato.
+
+> 🔒 `public/health.php` è l'unica superficie HTTP: proteggila con un `HEALTH_TOKEN` lungo e
+> casuale e, se possibile, con una **IP whitelist**. Se non ti serve via browser, non
+> esporla: la diagnostica resta disponibile da CLI.
 
 Test sul campo consigliato: scatta e invia una foto dalla Canon, poi **simula una caduta
 Wi-Fi** spegnendo l'access point durante l'invio. Verifica che il file parziale NON venga

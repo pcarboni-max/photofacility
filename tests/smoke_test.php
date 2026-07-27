@@ -147,6 +147,17 @@ $assert($lock->acquire() === true, 'Lock acquisito');
 $assert(($app->runTick()['skipped_locked'] ?? false) === true, 'Tick saltato mentre il lock è attivo');
 $lock->release();
 
+fwrite(STDOUT, "\n== 6b. Diagnostica (HealthCheck) ==\n");
+$report = (new \PhotoFacility\Health\HealthCheck($config))->run();
+$assert($report['verdict'] !== 'CRITICAL', 'Verdetto diagnostica non CRITICAL (' . $report['verdict'] . ')');
+$byName = [];
+foreach ($report['checks'] as $c) {
+    $byName[$c['category'] . '/' . $c['name']] = $c['status'];
+}
+$assert(($byName['S3/Connettività'] ?? '') === 'ok', 'Check S3 connettività = ok (mock raggiungibile)');
+$assert(($byName['Database/Integrità (quick_check)'] ?? '') === 'ok', 'Check integrità DB = ok');
+$assert(($byName['Database/Schema'] ?? '') === 'ok', 'Check schema DB = ok');
+
 fwrite(STDOUT, "\n== 7. Validazione HOME_TZ (R5) ==\n");
 putenv('HOME_TZ=Foo/Bar'); // zona inesistente
 $threw = false;
