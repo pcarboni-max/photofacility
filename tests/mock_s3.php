@@ -10,10 +10,14 @@ declare(strict_types=1);
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
-// HEAD: simula "oggetto non trovato" (chiave sonda / reaper). Raggiungibile +
-// auth OK ma chiave assente = 404, come farebbe S3 con credenziali valide.
-if ($method === 'HEAD') {
+// HEAD (reaper) e GET (sonda diagnostica): simula "oggetto non trovato".
+// Raggiungibile + auth OK ma chiave assente = 404, come farebbe S3 reale.
+if ($method === 'HEAD' || $method === 'GET') {
     http_response_code(404);
+    if ($method === 'GET') {
+        header('Content-Type: application/xml');
+        echo '<?xml version="1.0"?><Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>';
+    }
     return;
 }
 

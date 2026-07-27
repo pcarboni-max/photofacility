@@ -253,14 +253,16 @@ final class HealthCheck
             sessionToken: $this->config->awsSessionToken,
         );
 
-        // HeadObject su una chiave sonda inesistente: non muta nulla e non
-        // richiede s3:ListBucket. Interpretiamo lo status:
+        // GET firmata su una chiave sonda inesistente: non muta nulla, non
+        // richiede s3:ListBucket, e (a differenza di HEAD) restituisce il corpo
+        // XML con il codice d'errore reale. Interpretiamo lo status:
         //   404 → raggiungibile + auth OK (chiave assente) = SANO
         //   200 → raggiungibile + oggetto presente          = SANO
         //   403 → raggiungibile ma permessi/credenziali KO  = FAIL
+        //   400 → firma/region errata                        = FAIL
         //   0   → irraggiungibile (rete/DNS/TLS)             = FAIL
         $probeKey = ($this->config->s3Prefix !== '' ? rtrim($this->config->s3Prefix, '/') . '/' : '') . '.healthcheck-probe';
-        $head = $client->headObject((string) $this->config->s3Bucket, $probeKey, 10);
+        $head = $client->probe((string) $this->config->s3Bucket, $probeKey, 10);
         $status = (int) $head['status'];
         $err = (string) ($head['error'] ?? '');
 

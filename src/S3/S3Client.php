@@ -110,6 +110,27 @@ final class S3Client implements StorageTarget
     }
 
     /**
+     * Sonda di connettività diagnostica: esegue una GET firmata su una chiave
+     * (tipicamente inesistente). A differenza di HEAD, la GET restituisce il
+     * CORPO XML con <Code>/<Message>, così su un 400/403 vediamo il motivo reale
+     * (es. AuthorizationHeaderMalformed, che indica anche la region corretta).
+     * Da usare SOLO per diagnostica: per la logica normale si usa headObject.
+     *
+     * @return array{status:int, error:?string}
+     */
+    public function probe(string $bucket, string $key, int $timeout = 10): array
+    {
+        [$host, $urlPath, $baseUrl] = $this->resolveEndpoint($bucket, $key);
+        if ($this->insecureNonLoopback($baseUrl) !== null) {
+            return ['status' => 0, 'error' => 'endpoint http:// non-loopback rifiutato'];
+        }
+        $emptyHash = hash('sha256', '');
+        $curlHeaders = $this->signedHeaders('GET', $host, $urlPath, $emptyHash, []);
+        $res = $this->send('GET', $baseUrl, $curlHeaders, null, 0, $timeout);
+        return ['status' => (int) $res['status'], 'error' => $res['error'] ?? null];
+    }
+
+    /**
      * Costruisce gli header firmati SigV4 per una richiesta.
      * @param array<string,string> $extra header aggiuntivi (lowercase) da firmare
      * @return list<string> header pronti per cURL (Authorization incluso)
