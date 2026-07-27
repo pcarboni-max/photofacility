@@ -193,26 +193,6 @@ final class PhotoRepository
     }
 
     /**
-     * Ripesca dalla dead-letter: riporta in coda i record in QUARANTINE/ERROR.
-     * @param list<string> $statuses
-     * @return int righe interessate
-     */
-    public function requeueTerminal(array $statuses): int
-    {
-        $statuses = array_values(array_intersect($statuses, ['QUARANTINE', 'ERROR']));
-        if ($statuses === []) {
-            return 0;
-        }
-        $placeholders = implode(',', array_fill(0, count($statuses), '?'));
-        $stmt = $this->pdo->prepare(
-            "UPDATE photos SET status = 'PENDING_S3', upload_attempts = 0, next_retry_at = NULL,
-             status_detail = 'requeued' WHERE status IN ({$placeholders})"
-        );
-        $stmt->execute($statuses);
-        return $stmt->rowCount();
-    }
-
-    /**
      * Statistiche del backlog di upload per l'alerting.
      * @return array{count:int, oldest_age_seconds:?int}
      */

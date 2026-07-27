@@ -57,13 +57,6 @@ final class App
         $this->ensureSchema();
     }
 
-    /** Applica lo schema esplicitamente (usato da bin/migrate.php). Idempotente. */
-    public function migrate(string $schemaFile): void
-    {
-        $this->db->migrate($schemaFile);
-        $this->log->info('Schema DB applicato.');
-    }
-
     private function ensureSchema(): void
     {
         $exists = $this->db->pdo()
@@ -120,6 +113,7 @@ final class App
             }
 
             $this->cleanupStaging();
+            $this->runDailyMaintenanceIfDue();
             $this->postCycle($totals);
 
             $totals['elapsed'] = round(microtime(true) - $start, 2);
@@ -310,15 +304,36 @@ final class App
     }
 
     // ---------------------------------------------------------------------
-    // Operazioni (bin/requeue.php, bin/maintain.php)
+    // Manutenzione automatica (dentro il cron, una volta al giorno)
     // ---------------------------------------------------------------------
 
-    /** @param list<string> $statuses */
-    public function requeue(array $statuses): int
+    /**
+     * Esegue manutenzione DB + backup su S3 UNA volta al giorno (UTC), guidato
+     * da un marker su file. Gira dentro il normale ciclo del cron: nessuna
+     * azione manuale richiesta (l'ambiente non ha accesso CLI/SSH).
+     */
+    private function runDailyMaintenanceIfDue(): void
     {
-        $n = $this->repo->requeueTerminal($statuses);
-        $this->log->info('Requeue dalla dead-letter', ['statuses' => $statuses, 'affected' => $n]);
-        return $n;
+        $marker = dirname($this->config->healthFile) . '/last_maintenance';
+        $today = gmdate('Y-m-d');
+        $done = is_file($marker) ? trim((string) @file_get_contents($marker)) : '';
+        if ($done === $today) {
+            return;
+        }
+
+        try {
+            $this->maintain();
+        } catch (\Throwable $e) {
+            $this->log->error('Manutenzione giornaliera fallita', ['error' => $e->getMessage()]);
+        }
+        try {
+            $this->backupDbToS3();
+        } catch (\Throwable $e) {
+            $this->log->error('Backup giornaliero DB fallito', ['error' => $e->getMessage()]);
+            $this->notifier->alert('backup_failed', 'Backup DB fallito', $e->getMessage());
+        }
+
+        @file_put_contents($marker, $today);
     }
 
     /** @return array<string,mixed> */

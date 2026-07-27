@@ -221,7 +221,7 @@ final class HealthCheck
 
         // quarantena / errori
         $quar = (int) ($counts['QUARANTINE'] ?? 0);
-        $this->add($cat, 'Quarantena', $quar === 0 ? self::OK : self::WARN, $quar === 0 ? 'nessuna' : "{$quar} foto (ispezionare + bin/requeue.php)");
+        $this->add($cat, 'Quarantena', $quar === 0 ? self::OK : self::WARN, $quar === 0 ? 'nessuna' : "{$quar} foto (upload fallito ripetutamente: reinviale dalla camera per riprovare)");
         $err = (int) ($counts['ERROR'] ?? 0);
         $this->add($cat, 'Errori', $err === 0 ? self::OK : self::WARN, $err === 0 ? 'nessuno' : "{$err} foto in ERROR");
 

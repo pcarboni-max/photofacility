@@ -46,10 +46,9 @@ non combacino con il checksum calcolato in locale.
    ```
 3. Configura il client FTP della Canon puntando alla cartella `staging/incoming/`.
 
-> **Lo schema del DB si crea da solo** al primo avvio (auto-migrazione idempotente):
-> non serve lanciare `bin/migrate.php` a mano. Utile su hosting **senza SSH**, dove non
-> hai una shell. `bin/migrate.php` resta disponibile come comando esplicito/di stato per
-> chi può eseguirlo (es. Plesk → Scheduled Tasks).
+Non c'è nient'altro da lanciare. **Senza accesso a riga di comando**, l'unica cosa che gira
+è il cron ricorrente: lo schema del DB si crea da solo al primo tick, e **manutenzione e
+backup del DB su S3 avvengono automaticamente una volta al giorno** dentro il cron stesso.
 
 Dettagli di deploy su Plesk: **[docs/SETUP.md](docs/SETUP.md)**
 Architettura e scelte di design: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
@@ -66,16 +65,12 @@ SigV4, upload, verifica ETag, lock).
 ## Struttura
 
 ```
-bin/ingest.php        entry point cron (CLI) — loop-within-cron
-bin/migrate.php       applica lo schema DB (opzionale: è anche automatico)
-bin/requeue.php       ripesca le foto da QUARANTINE/ERROR
-bin/maintain.php      pruning eventi + checkpoint WAL + VACUUM
-bin/backup.php        backup del DB SQLite su S3 (metadati/tag Fase 2)
-bin/doctor.php        diagnostica completa da CLI (bucket, DB, cron, disco...)
-public/health.php     stessa diagnostica via web (token, read-only)
-src/Config.php        configurazione da .env (config DB disaccoppiata da S3)
+bin/ingest.php        UNICO script del cron (loop-within-cron): ingestione +
+                      upload S3 + manutenzione/backup automatici giornalieri
+public/health.php     diagnostica via web (token, read-only) — l'unica pagina web
 src/Health/           HealthCheck: diagnostica end-to-end del sistema
-src/App.php           orchestrazione (loop, reaper, health, alerting)
+src/Config.php        configurazione da .env (config DB disaccoppiata da S3)
+src/App.php           orchestrazione (loop, reaper, health, alerting, backup)
 src/Ingest/           validazione integrità, EXIF, scansione + freno disco pieno
 src/S3/               client S3 SigV4 + uploader con retry/quarantena
 src/Support/          Env, Logger, Lock, Notifier (alerting webhook/email)
@@ -83,24 +78,12 @@ src/Database/         schema access (PDO/SQLite WAL)
 db/schema.sql         DDL (photos + tabelle Fase 2)
 ```
 
-## Operazioni senza SSH
+## Diagnostica (via web)
 
-Tutte via Plesk → Scheduled Tasks ("Run Now" per le azioni one-off). Vedi
-[docs/SETUP.md](docs/SETUP.md).
-
-| Azione | Comando |
-| :-- | :-- |
-| Ingestion (ricorrente, ogni minuto) | `php bin/ingest.php` |
-| Ripescare foto in quarantena | `php bin/requeue.php` |
-| Manutenzione DB (mensile) | `php bin/maintain.php` |
-| Backup DB su S3 (giornaliero) | `php bin/backup.php` |
-| Diagnostica completa | `php bin/doctor.php` (o `--json`) |
-| Stato/health rapido | scarica `db/health.json` via FTP |
-
-### Diagnostica
-
-`bin/doctor.php` (CLI) e `public/health.php` (web, protetta da `HEALTH_TOKEN`) eseguono lo
-**stesso controllo completo**: versione/estensioni PHP, config e credenziali (senza mai
-esporre i segreti), permessi filesystem, spazio disco, database (schema, WAL, integrità,
-backlog, quarantena, upload bloccati), **connettività S3** (read-only, least-privilege) e
-stato del cron. Verdetto complessivo: `SOLID` / `WARNINGS` / `CRITICAL`.
+`public/health.php` (protetta da `HEALTH_TOKEN`) esegue un **controllo completo**:
+versione/estensioni PHP, config e credenziali (senza mai esporre i segreti), permessi
+filesystem, spazio disco, database (schema, WAL, integrità, backlog, quarantena, upload
+bloccati), **connettività S3** (read-only, least-privilege) e stato del cron. Verdetto:
+`SOLID` / `WARNINGS` / `CRITICAL` (la pagina risponde HTTP 503 se `CRITICAL`, per i monitor
+esterni). Apri `https://tuosito/health.php` o `?format=json`. Per uno stato rapido senza
+pagina, scarica `db/health.json` via FTP.

@@ -20,8 +20,8 @@ Layout consigliato:
     └── health.php          ← (opzionale) include ../photofacility/public/health.php
 ```
 
-Se non ti serve la diagnostica via browser, **non esporre nulla**: usa `bin/doctor.php` da
-Plesk "Run Now". La pagina web è solo una comodità.
+Se non ti serve la diagnostica via browser, **non esporre nulla**: puoi comunque controllare
+lo stato scaricando `db/health.json` via FTP.
 
 > ⚠️ Se il tuo hosting ti costringe a mettere tutto sotto `httpdocs/`, proteggi le cartelle
 > con un `.htaccess` (`Require all denied`) su `src/`, `bin/`, `db/`, `staging/`, `.env`.
@@ -38,48 +38,32 @@ I percorsi di default (`staging/`, `db/`) sono relativi alla root del progetto. 
 FTP della Canon deposita in una cartella diversa, imposta `INCOMING_DIR` con il percorso
 assoluto di quella cartella.
 
-## 3. Migrazione DB (automatica — nessun SSH necessario)
+## 3. Migrazione DB (automatica)
 
-**Non devi lanciare nulla a mano.** Lo schema del database si crea da solo, in modo
-idempotente, al primo avvio dell'applicazione (primo tick del cron). Assicurati solo che la
-cartella `db/` sia **scrivibile** dall'utente PHP.
+**Non devi lanciare nulla.** Lo schema del database si crea da solo, in modo idempotente, al
+primo tick del cron. Assicurati solo che la cartella `db/` sia **scrivibile** dall'utente PHP.
 
-Se preferisci crearlo esplicitamente *prima* di attivare il cron, senza SSH:
+## 4. Cron — l'unica cosa da configurare
 
-- **Via Plesk → Scheduled Tasks**: aggiungi un task una tantum *Run a PHP script* che punta a
-  `bin/migrate.php` ed eseguilo con **"Run Now"** (stampa anche i conteggi per stato).
-
-Verifica poi che `db/photofacility.sqlite` sia stato creato.
-
-## 4. Cron
-
-### 4a. Via CLI (consigliato)
-
-In Plesk → **Scheduled Tasks** → *Run a PHP script* oppure *Run a command*:
+In Plesk → **Scheduled Tasks**, un solo task ricorrente **ogni minuto**:
 
 ```
 * * * * * /usr/bin/php /var/www/vhosts/tuosito/photofacility/bin/ingest.php
 ```
 
-Ogni minuto è il massimo utile: il `flock` garantisce che i tick non si sovrappongano se
-uno sfora.
+È tutto. Questo singolo task fa **tutto** in automatico:
+
+- ingestione dei file completi + upload su S3 (con retry, reaper, quarantena);
+- **manutenzione DB e backup del DB su S3 una volta al giorno**, dentro il ciclo stesso;
+- niente altri task da schedulare, niente comandi da lanciare a mano.
 
 `bin/ingest.php` usa il **loop-within-cron**: acquisisce il lock una volta e cicla per
 ~`LOOP_DURATION_SECONDS` (default 55s), così c'è quasi sempre un processo vivo e la latenza
 scende da ~1 min a pochi secondi. Il `flock` fa uscire subito il tick del minuto successivo
 se il precedente è ancora attivo.
 
-> L'**ingestion** gira **solo** via CLI: nessun entry-point web la innesca (niente token nei
-> log, timeout del web server, ecc.). L'unica pagina web esistente è la **diagnostica**
-> read-only `public/health.php` (§8), opzionale e protetta da token.
-
-### 4c. Altri task schedulati (Plesk → Scheduled Tasks)
-
-| Task | Frequenza consigliata | Comando |
-| :--- | :--- | :--- |
-| Backup DB su S3 | giornaliera | `php bin/backup.php` |
-| Manutenzione DB | mensile | `php bin/maintain.php` |
-| Requeue quarantena | "Run Now" all'occorrenza | `php bin/requeue.php` |
+> L'ingestion non ha alcun entry-point web. L'unica pagina web è la **diagnostica** read-only
+> `public/health.php` (§8), opzionale e protetta da token.
 
 ## 5. Client FTP sulla Canon
 
@@ -129,27 +113,29 @@ log e dovrai controllarli a mano.
 - I file rifiutati finiscono in `staging/failed/` e vengono ripuliti dopo
   `STAGING_RETENTION_HOURS` (default 48h). Controllali ogni tanto per diagnosticare
   problemi ricorrenti (camera con clock sbagliato, formati inattesi, ecc.).
-- Le foto in stato `QUARANTINE` sono quelle che hanno esaurito i tentativi di upload:
-  vanno ispezionate a mano (probabile problema di credenziali/permessi S3).
+- Le foto in stato `QUARANTINE` sono quelle che hanno esaurito i tentativi di upload
+  (probabile problema di credenziali/permessi S3): risolta la causa, **reinviale dalla
+  camera** — vengono riconosciute e ricaricate senza duplicati.
 
 ## 8. Verifica del funzionamento e diagnostica
 
-Senza SSH, lo stato si legge senza `tail`:
+Tutto via web o FTP (nessun comando da lanciare):
 
-- **Diagnostica completa** — `bin/doctor.php` (Plesk "Run Now") oppure `public/health.php` via
-  browser: controlla versione/estensioni PHP, config e credenziali (senza esporre i segreti),
-  permessi, disco, database (schema, WAL, **integrità**, backlog, quarantena, upload bloccati),
-  **connettività S3** (read-only) e stato del cron. Verdetto: `SOLID` / `WARNINGS` / `CRITICAL`.
-  - Web: imposta `HEALTH_TOKEN` nel `.env`, poi
-    `https://tuosito/health.php` (HTML) o `?format=json` (per monitor esterni tipo UptimeRobot).
-    Passa il token via header `X-Health-Token` (evita la querystring nei log). La pagina
-    risponde **HTTP 503** se il verdetto è `CRITICAL`.
-- **`db/health.json`** — scritto a ogni ciclo (ultimo run UTC, conteggi, backlog, disco).
+- **Diagnostica completa** — `public/health.php` (protetta da `HEALTH_TOKEN`): versione/
+  estensioni PHP, config e credenziali (senza esporre i segreti), permessi, disco, database
+  (schema, WAL, **integrità**, backlog, quarantena, upload bloccati), **connettività S3**
+  (read-only) e stato del cron. Verdetto: `SOLID` / `WARNINGS` / `CRITICAL`.
+  - Imposta `HEALTH_TOKEN` nel `.env`, poi apri `https://tuosito/health.php` (HTML) o
+    `?format=json` (per monitor esterni tipo UptimeRobot). Passa il token via header
+    `X-Health-Token` (evita la querystring nei log). La pagina risponde **HTTP 503** se
+    il verdetto è `CRITICAL`.
+- **`db/health.json`** — scritto a ogni ciclo (ultimo run UTC, conteggi, backlog, disco):
+  stato rapido scaricabile via FTP.
 - **`db/photofacility.log`** — log applicativo, scaricabile via FTP.
 
 > 🔒 `public/health.php` è l'unica superficie HTTP: proteggila con un `HEALTH_TOKEN` lungo e
-> casuale e, se possibile, con una **IP whitelist**. Se non ti serve via browser, non
-> esporla: la diagnostica resta disponibile da CLI.
+> casuale e, se possibile, con una **IP whitelist**. Se non ti serve, non esporla: lo stato
+> resta leggibile da `db/health.json` via FTP.
 
 Test sul campo consigliato: scatta e invia una foto dalla Canon, poi **simula una caduta
 Wi-Fi** spegnendo l'access point durante l'invio. Verifica che il file parziale NON venga

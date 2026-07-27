@@ -10,10 +10,6 @@
         "ext-curl": "*",
         "ext-hash": "*"
     },
-    "require-dev": {
-        "phpunit/phpunit": "^10.5",
-        "phpstan/phpstan": "^1.11"
-    },
     "suggest": {
         "ext-exif": "Estrazione della data di scatto e del modello camera dai metadati EXIF."
     },
@@ -22,16 +18,9 @@
             "PhotoFacility\\": "src/"
         }
     },
-    "autoload-dev": {
-        "psr-4": {
-            "PhotoFacility\\Tests\\": "tests/"
-        }
-    },
     "scripts": {
-        "migrate": "php bin/migrate.php",
         "ingest": "php bin/ingest.php",
-        "stan": "phpstan analyse src --level=6",
-        "test": "phpunit"
+        "test": "bash tests/run_tests.sh"
     },
     "config": {
         "sort-packages": true

@@ -123,12 +123,6 @@ $app->runTick(); // il reaper gira a inizio tick, poi il drain carica
 $row = $pdo->query("SELECT status FROM photos WHERE uuid='stuck-uuid'")->fetch(PDO::FETCH_ASSOC);
 $assert(($row['status'] ?? '') === 'UPLOADED_S3', 'Record orfano recuperato dal reaper e caricato');
 
-fwrite(STDOUT, "\n== 5. Requeue dalla dead-letter ==\n");
-$pdo->exec("UPDATE photos SET status='QUARANTINE' WHERE uuid='stuck-uuid'");
-$n = $app->requeue(['QUARANTINE']);
-$assert($n === 1, 'Requeue riporta 1 foto in coda');
-$assert(($pdo->query("SELECT status FROM photos WHERE uuid='stuck-uuid'")->fetchColumn()) === 'PENDING_S3', 'Stato tornato PENDING_S3');
-
 fwrite(STDOUT, "\n== 5b. Recupero da reinvio (R11) ==\n");
 // foto1 è UPLOADED_S3: la forziamo in QUARANTINE, poi la camera "reinvia" gli
 // stessi byte → deve essere RECUPERATA (non scartata come duplicato).
