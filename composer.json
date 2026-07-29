@@ -1,0 +1,29 @@
+{
+    "name": "industree/photofacility",
+    "description": "Ingestion automatica di fotografie Canon EOS via FTP verso AWS S3 (Fase 1).",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.1",
+        "ext-pdo": "*",
+        "ext-pdo_sqlite": "*",
+        "ext-curl": "*",
+        "ext-hash": "*"
+    },
+    "suggest": {
+        "ext-exif": "Estrazione della data di scatto e del modello camera dai metadati EXIF.",
+        "ext-gd": "Generazione di thumbnail e preview per l'interfaccia di visualizzazione (Fase 2)."
+    },
+    "autoload": {
+        "psr-4": {
+            "PhotoFacility\\": "src/"
+        }
+    },
+    "scripts": {
+        "ingest": "php bin/ingest.php",
+        "test": "bash tests/run_tests.sh"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

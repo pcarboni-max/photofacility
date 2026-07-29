@@ -1,0 +1,28 @@
+# segreti / configurazione locale
+.env
+
+# database di stato e log (runtime)
+/db/*.sqlite
+/db/*.sqlite-wal
+/db/*.sqlite-shm
+/db/*.log
+/db/*.lock
+
+# cache locale di thumbnail/preview (rigenerabile)
+/cache/
+
+# file transitori in staging (le foto NON vanno versionate)
+/staging/incoming/*
+/staging/processing/*
+/staging/failed/*
+!/staging/incoming/.gitkeep
+!/staging/processing/.gitkeep
+!/staging/failed/.gitkeep
+
+# dipendenze / tooling
+/vendor/
+composer.lock
+
+# vari
+.DS_Store
+*.tmp
