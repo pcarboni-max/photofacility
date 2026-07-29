@@ -23,7 +23,7 @@
     if (it.preview) {
       wrap.innerHTML = '<img alt="' + esc(it.name) + '" src="' + esc(it.preview) + '">';
     } else {
-      wrap.innerHTML = '<span class="ph">Anteprima non disponibile<br><small>(RAW)</small></span>';
+      wrap.innerHTML = '<span class="ph">' + esc(it.placeholder || 'Anteprima non disponibile') + '</span>';
     }
 
     var exifHtml = '';

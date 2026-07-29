@@ -12,8 +12,10 @@ declare(strict_types=1);
  */
 
 use PhotoFacility\Web\Gallery;
+use PhotoFacility\Web\Guard;
 
 $g = Gallery::boot(dirname(__DIR__));
+Guard::enforce($g->config);
 
 $h = static fn (string $s): string => htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
 $env = $h($g->config->appEnvName);
@@ -39,21 +41,9 @@ $day = isset($_GET['day']) ? (string) $_GET['day'] : null;
 <main>
 <?php if ($day !== null && preg_match('/^\d{4}-\d{2}-\d{2}$/', $day)):
 
-    $photos = $g->day($day);
-    $items = [];
-    foreach ($photos as $p) {
-        $id = (int) $p['id'];
-        $ready = ($p['thumb_status'] ?? '') === 'READY';
-        $items[] = [
-            'name' => (string) $p['original_filename'],
-            'thumb' => $ready ? 'media.php?id=' . $id . '&size=thumb' : null,
-            'preview' => $ready ? 'media.php?id=' . $id . '&size=preview' : null,
-            'download' => 'dl.php?id=' . $id,
-            'exif' => $g->exifSummary($p),
-        ];
-    }
+    $items = $g->dayItems($day);
     ?>
-    <h1><?= $h($day) ?> <span class="muted">· <?= count($photos) ?> foto</span></h1>
+    <h1><?= $h($day) ?> <span class="muted">· <?= count($items) ?> foto</span></h1>
     <?php if ($items === []): ?>
       <p class="muted">Nessuna foto per questo giorno.</p>
     <?php else: ?>
@@ -63,7 +53,7 @@ $day = isset($_GET['day']) ? (string) $_GET['day'] : null;
           <?php if ($it['thumb']): ?>
             <img loading="lazy" src="<?= $h($it['thumb']) ?>" alt="<?= $h($it['name']) ?>">
           <?php else: ?>
-            <span class="ph">RAW<br><small>anteprima n/d</small></span>
+            <span class="ph"><small><?= $h((string) $it['placeholder']) ?></small></span>
           <?php endif; ?>
         </button>
       <?php endforeach; ?>
@@ -83,11 +73,11 @@ $day = isset($_GET['day']) ? (string) $_GET['day'] : null;
         <a class="card" href="index.php?day=<?= $d ?>">
           <div class="card-head"><h2><?= $d ?></h2><span class="muted"><?= (int) $card['count'] ?> foto</span></div>
           <div class="strip">
-            <?php foreach ($card['thumbs'] as $t): $id = (int) $t['id']; ?>
-              <?php if (($t['thumb_status'] ?? '') === 'READY'): ?>
+            <?php foreach ($card['thumbs'] as $t): $id = (int) $t['id']; $ts = (string) ($t['thumb_status'] ?? 'PENDING'); ?>
+              <?php if ($ts === 'READY'): ?>
                 <img loading="lazy" src="media.php?id=<?= $id ?>&size=thumb" alt="">
               <?php else: ?>
-                <span class="ph small">RAW</span>
+                <span class="ph small"><?= $ts === 'SKIPPED' ? 'RAW' : '…' ?></span>
               <?php endif; ?>
             <?php endforeach; ?>
           </div>

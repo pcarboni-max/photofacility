@@ -8,8 +8,10 @@ declare(strict_types=1);
  */
 
 use PhotoFacility\Web\Gallery;
+use PhotoFacility\Web\Guard;
 
 $g = Gallery::boot(dirname(__DIR__));
+Guard::enforce($g->config);
 
 $id = (int) ($_GET['id'] ?? 0);
 $size = (($_GET['size'] ?? 'thumb') === 'preview') ? 'preview' : 'thumb';

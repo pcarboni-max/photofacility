@@ -13,6 +13,10 @@ namespace PhotoFacility\Thumbnail;
  */
 final class ThumbnailGenerator
 {
+    public function __construct(private readonly int $maxMegapixels = 80)
+    {
+    }
+
     /** Solo JPEG genera preview, per ora. Senza GD, nessuna anteprima (SKIPPED). */
     public function isPreviewable(string $mime): bool
     {
@@ -25,6 +29,19 @@ final class ThumbnailGenerator
      */
     public function resizeJpeg(string $src, string $dst, int $maxSide, int $quality = 82): bool
     {
+        // getimagesize legge solo l'header: verifichiamo tipo e dimensioni SENZA
+        // decomprimere. Oltre la soglia di megapixel non generiamo (evita OOM).
+        $info = @getimagesize($src);
+        if ($info === false || ($info[2] ?? 0) !== IMAGETYPE_JPEG) {
+            return false;
+        }
+        $pixels = (int) $info[0] * (int) $info[1];
+        if ($pixels > $this->maxMegapixels * 1_000_000) {
+            return false;
+        }
+        // best-effort: alza memory_limit se troppo basso per decodificare l'immagine
+        $this->ensureMemory($pixels);
+
         $img = @imagecreatefromjpeg($src);
         if ($img === false) {
             return false;
@@ -57,8 +74,36 @@ final class ThumbnailGenerator
         return $ok;
     }
 
+    /** Alza memory_limit best-effort se sotto il fabbisogno stimato per decodificare. */
+    private function ensureMemory(int $pixels): void
+    {
+        // GD tiene l'immagine decodificata + copie di lavoro: stima ~5 byte/pixel.
+        $needMb = (int) ceil($pixels * 5 / 1048576) + 64;
+        $current = $this->memoryLimitMb();
+        if ($current > 0 && $current < $needMb) {
+            @ini_set('memory_limit', $needMb . 'M');
+        }
+    }
+
+    private function memoryLimitMb(): int
+    {
+        $v = trim((string) ini_get('memory_limit'));
+        if ($v === '' || $v === '-1') {
+            return -1; // illimitato
+        }
+        $unit = strtolower($v[strlen($v) - 1]);
+        $num = (int) $v;
+        return match ($unit) {
+            'g' => $num * 1024,
+            'm' => $num,
+            'k' => (int) ceil($num / 1024),
+            default => (int) ceil($num / 1048576),
+        };
+    }
+
     /**
      * Applica la rotazione/ribaltamento indicati dal tag EXIF Orientation.
+     * Distrugge sempre la risorsa intermedia dopo una rotazione (niente leak GD).
      * @param \GdImage $img
      * @return \GdImage
      */
@@ -73,29 +118,38 @@ final class ThumbnailGenerator
             return $img;
         }
 
+        $rotate = function (\GdImage $im, int $deg): \GdImage {
+            $r = imagerotate($im, $deg, 0);
+            if ($r instanceof \GdImage) {
+                imagedestroy($im);
+                return $r;
+            }
+            return $im;
+        };
+
         switch ($orient) {
             case 2:
                 imageflip($img, IMG_FLIP_HORIZONTAL);
                 break;
             case 3:
-                $img = imagerotate($img, 180, 0);
+                $img = $rotate($img, 180);
                 break;
             case 4:
                 imageflip($img, IMG_FLIP_VERTICAL);
                 break;
             case 5:
-                $img = imagerotate($img, -90, 0);
+                $img = $rotate($img, -90);
                 imageflip($img, IMG_FLIP_HORIZONTAL);
                 break;
             case 6:
-                $img = imagerotate($img, -90, 0);
+                $img = $rotate($img, -90);
                 break;
             case 7:
-                $img = imagerotate($img, 90, 0);
+                $img = $rotate($img, 90);
                 imageflip($img, IMG_FLIP_HORIZONTAL);
                 break;
             case 8:
-                $img = imagerotate($img, 90, 0);
+                $img = $rotate($img, 90);
                 break;
         }
         return $img;

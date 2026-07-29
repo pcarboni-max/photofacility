@@ -229,6 +229,21 @@ final class HealthCheck
         $cutoff = gmdate('Y-m-d H:i:s', time() - $this->config->reaperStuckMinutes * 60);
         $stuck = (int) $pdo->query("SELECT COUNT(*) FROM photos WHERE status='UPLOADING_S3' AND updated_at < '" . $cutoff . "'")->fetchColumn();
         $this->add($cat, 'Upload bloccati', $stuck === 0 ? self::OK : self::WARN, $stuck === 0 ? 'nessuno' : "{$stuck} oltre soglia reaper (li recupererà il prossimo tick)");
+
+        // copertura thumbnail (Fase 2)
+        $thumb = [];
+        foreach ($pdo->query("SELECT thumb_status, COUNT(*) AS n FROM photos WHERE status='UPLOADED_S3' GROUP BY thumb_status") as $r) {
+            $thumb[(string) $r['thumb_status']] = (int) $r['n'];
+        }
+        $pendingThumb = ($thumb['PENDING'] ?? 0) + ($thumb['ERROR'] ?? 0);
+        $this->add(
+            $cat,
+            'Anteprime',
+            $pendingThumb === 0 ? self::OK : self::WARN,
+            $pendingThumb === 0
+                ? 'tutte generate (' . $this->formatCounts($thumb) . ')'
+                : "{$pendingThumb} in attesa/errore (le genera il reconciler del cron)"
+        );
     }
 
     // -------------------------------------------------------------------

@@ -92,7 +92,8 @@ Richiede **`ext-gd`**. UI PHP sul server, immagini su S3.
 - **Pagina giorno** (`index.php?day=…`): griglia di thumbnail → **lightbox** con navigazione sequenziale; per ogni foto nome, EXIF principali e **download full-res**.
 - **Thumbnail** (~300px) e **preview** (~1600px) generate solo per JPEG, in cache locale fuori dal webroot, servite da `media.php`. I RAW mostrano un placeholder ma mantengono EXIF e download. Un **reconciler** nel cron garantisce che ogni foto abbia la sua thumbnail (rigenera le mancanti scaricando da S3).
 - **Download**: `dl.php` reindirizza a un **URL S3 presigned** a scadenza breve (i byte non passano dal server).
-- **Sicurezza**: nessun login applicativo → proteggi l'intera UI con la **basic auth** del webserver. Esponi solo `public/`.
+- **Sicurezza**: nessun login applicativo → proteggi l'intera UI con la **basic auth** del webserver ed esponi solo `public/`. Come difesa in profondità opzionale puoi impostare `UI_TOKEN` nel `.env`: se valorizzato, l'accesso richiede `?k=TOKEN` (poi salvato in cookie), così una basic auth disattivata per sbaglio non lascia tutto aperto.
+- **Note operative**: il reconciler scarica il full-res da S3 per le anteprime mancanti → **gratis solo se server e bucket sono nella stessa region**. La cache locale (`cache/`) cresce nel tempo ed è **rigenerabile** (non versionata); `bin/ingest.php` ripulisce da sé i file temporanei di download orfani.
 
 ## Diagnostica (via web)
 

@@ -338,6 +338,40 @@ final class PhotoRepository
         return $out;
     }
 
+    /**
+     * EXIF per un insieme di foto in una sola query (evita l'N+1 nella pagina giorno).
+     * @param list<int> $ids
+     * @return array<int,array<string,string>> photo_id => (tag => valore)
+     */
+    public function exifForMany(array $ids): array
+    {
+        $ids = array_values(array_filter(array_map('intval', $ids)));
+        if ($ids === []) {
+            return [];
+        }
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $this->pdo->prepare("SELECT photo_id, tag, value FROM photo_exif WHERE photo_id IN ({$in})");
+        $stmt->execute($ids);
+        $out = [];
+        foreach ($stmt->fetchAll() as $r) {
+            $out[(int) $r['photo_id']][(string) $r['tag']] = (string) $r['value'];
+        }
+        return $out;
+    }
+
+    /** @return array<string,int> conteggio foto per stato thumbnail */
+    public function thumbStatusCounts(): array
+    {
+        $rows = $this->pdo->query(
+            "SELECT thumb_status, COUNT(*) AS n FROM photos WHERE status='UPLOADED_S3' GROUP BY thumb_status"
+        )->fetchAll();
+        $out = [];
+        foreach ($rows as $r) {
+            $out[(string) $r['thumb_status']] = (int) $r['n'];
+        }
+        return $out;
+    }
+
     /** Pruning dei vecchi eventi per non far crescere la tabella all'infinito. */
     public function pruneEvents(int $days): int
     {

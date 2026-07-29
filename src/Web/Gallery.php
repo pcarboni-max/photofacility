@@ -75,6 +75,46 @@ final class Gallery
         return $this->repo->listByDay($date);
     }
 
+    /**
+     * Elementi pronti per la pagina giorno: thumb/preview/download/exif + un
+     * eventuale testo placeholder secondo lo stato thumbnail. EXIF caricati in
+     * blocco (una query per l'intera giornata, niente N+1).
+     * @return array<int,array<string,mixed>>
+     */
+    public function dayItems(string $date): array
+    {
+        $photos = $this->repo->listByDay($date);
+        $ids = array_map(static fn ($p) => (int) $p['id'], $photos);
+        $exifAll = $this->repo->exifForMany($ids);
+
+        $items = [];
+        foreach ($photos as $p) {
+            $id = (int) $p['id'];
+            $status = (string) ($p['thumb_status'] ?? 'PENDING');
+            $ready = $status === 'READY';
+            $items[] = [
+                'name' => (string) $p['original_filename'],
+                'thumb' => $ready ? 'media.php?id=' . $id . '&size=thumb' : null,
+                'preview' => $ready ? 'media.php?id=' . $id . '&size=preview' : null,
+                'download' => 'dl.php?id=' . $id,
+                'placeholder' => $ready ? null : $this->placeholderLabel($status),
+                'exif' => $this->exifSummary($p, $exifAll[$id] ?? []),
+            ];
+        }
+        return $items;
+    }
+
+    /** Etichetta per le tile senza anteprima, distinguendo lo stato. */
+    public function placeholderLabel(string $thumbStatus): string
+    {
+        return match ($thumbStatus) {
+            'SKIPPED' => 'RAW · anteprima n/d',
+            'PENDING' => 'anteprima in preparazione…',
+            'ERROR' => 'anteprima non disponibile',
+            default => 'anteprima n/d',
+        };
+    }
+
     // -------- Media (thumb/preview locali) --------
 
     /** Percorso locale del file (thumb|preview) o null. */
@@ -114,12 +154,14 @@ final class Gallery
 
     /**
      * @param array<string,mixed> $row riga photos
+     * @param array<string,string>|null $e EXIF già caricati (null = carica ora)
      * @return array<string,string> etichetta => valore
      */
-    public function exifSummary(array $row): array
+    public function exifSummary(array $row, ?array $e = null): array
     {
-        $id = (int) $row['id'];
-        $e = $this->repo->exifFor($id);
+        if ($e === null) {
+            $e = $this->repo->exifFor((int) $row['id']);
+        }
         $out = [];
 
         if (!empty($row['exif_taken_at'])) {

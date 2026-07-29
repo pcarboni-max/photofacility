@@ -140,9 +140,15 @@ final class App
                 usleep($work > 0 ? 200_000 : 3_000_000);
             }
 
-            $this->reconcileThumbnails($client, $thumbs);
+            // Prima libera spazio, poi — SOLO se il disco non è in allarme —
+            // rigenera thumbnail e fai la manutenzione/backup (scrivono su disco).
             $this->cleanupStaging();
-            $this->runDailyMaintenanceIfDue();
+            if (($totals['disk_low'] ?? false) !== true) {
+                $this->reconcileThumbnails($client, $thumbs);
+                $this->runDailyMaintenanceIfDue();
+            } else {
+                $this->log->warn('Disco in allarme: salto reconcile thumbnail e manutenzione.');
+            }
             $this->postCycle($totals);
 
             $totals['elapsed'] = round(microtime(true) - $start, 2);
@@ -174,8 +180,10 @@ final class App
             $this->reapStuckUploads($client);
 
             $pass = $this->runPass($ingestor, $uploader, $deadline);
-            $this->reconcileThumbnails($client, $thumbs);
             $this->cleanupStaging();
+            if (($pass['ingest']['disk_low'] ?? false) !== true) {
+                $this->reconcileThumbnails($client, $thumbs);
+            }
             $this->postCycle([
                 'admitted' => $pass['ingest']['admitted'],
                 'uploaded' => $pass['upload']['uploaded'],
@@ -211,7 +219,7 @@ final class App
             usePathStyle: $this->config->s3PathStyle,
             sessionToken: $this->config->awsSessionToken,
         );
-        $thumbs = new ThumbnailService($this->config, $this->repo, new ThumbnailGenerator(), $this->log);
+        $thumbs = new ThumbnailService($this->config, $this->repo, new ThumbnailGenerator($this->config->thumbMaxMegapixels), $this->log);
         $ingestor = new Ingestor(
             $this->config,
             $this->repo,
@@ -230,8 +238,13 @@ final class App
      */
     private function reconcileThumbnails(StorageTarget $client, ThumbnailService $thumbs): void
     {
+        $deadline = microtime(true) + $this->config->reconcileMaxSeconds;
         $rows = $this->repo->fetchThumbnailable($this->config->thumbBatchPerTick);
         foreach ($rows as $row) {
+            if (microtime(true) > $deadline) {
+                $this->log->info('Budget reconciler thumbnail esaurito, riprendo al prossimo ciclo.');
+                break;
+            }
             $id = (int) $row['id'];
             if (!$thumbs->isPreviewable((string) $row['mime_detected'])) {
                 $this->repo->setThumb($id, 'SKIPPED', null, null);
@@ -295,6 +308,7 @@ final class App
             'last_run_utc' => gmdate('c'),
             'ok' => true,
             'status_counts' => $counts,
+            'thumb_counts' => $this->repo->thumbStatusCounts(),
             'backlog' => $backlog,
             'staging_mb' => $stagingMb,
             'disk_free_mb' => $freeMb,
@@ -398,7 +412,19 @@ final class App
         $pruned = $this->repo->pruneEvents($this->config->eventsRetentionDays);
         $this->db->pdo()->exec('PRAGMA wal_checkpoint(TRUNCATE)');
         $this->db->pdo()->exec('VACUUM');
-        $result = ['pruned_events' => $pruned, 'vacuumed' => true];
+
+        // rimuovi eventuali file temporanei di download del reconciler rimasti
+        // orfani (es. dopo un kill a metà): cache/_dl_*.tmp più vecchi di 1h.
+        $stray = 0;
+        foreach (glob($this->config->cacheDir . '/_dl_*.tmp') ?: [] as $tmp) {
+            $m = @filemtime($tmp);
+            if ($m !== false && (time() - $m) > 3600) {
+                @unlink($tmp);
+                $stray++;
+            }
+        }
+
+        $result = ['pruned_events' => $pruned, 'vacuumed' => true, 'stray_tmp_removed' => $stray];
         $this->log->info('Manutenzione DB', $result);
         return $result;
     }

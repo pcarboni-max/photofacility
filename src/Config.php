@@ -70,6 +70,9 @@ final class Config
         public readonly int $presignTtl,
         public readonly int $cardsPerPage,
         public readonly int $thumbBatchPerTick,
+        public readonly int $reconcileMaxSeconds,
+        public readonly int $thumbMaxMegapixels,
+        public readonly ?string $uiToken,
 
         public readonly bool $debug,
     ) {
@@ -125,8 +128,11 @@ final class Config
             thumbWidth: Env::int('THUMB_WIDTH', 300),
             previewWidth: Env::int('PREVIEW_WIDTH', 1600),
             presignTtl: Env::int('PRESIGN_TTL', 600),
-            cardsPerPage: Env::int('CARDS_PER_PAGE', 5),
-            thumbBatchPerTick: Env::int('THUMB_BATCH_PER_TICK', 20),
+            cardsPerPage: max(1, Env::int('CARDS_PER_PAGE', 5)),
+            thumbBatchPerTick: max(1, Env::int('THUMB_BATCH_PER_TICK', 20)),
+            reconcileMaxSeconds: max(5, Env::int('RECONCILE_MAX_SECONDS', 30)),
+            thumbMaxMegapixels: max(1, Env::int('THUMB_MAX_MEGAPIXELS', 80)),
+            uiToken: Env::get('UI_TOKEN'),
 
             debug: Env::bool('DEBUG', false),
         );
