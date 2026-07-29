@@ -131,6 +131,96 @@ final class S3Client implements StorageTarget
     }
 
     /**
+     * Genera un URL presigned (SigV4 query-string) per un GET a scadenza breve.
+     * Usato per il download full-res: il browser scarica direttamente da S3.
+     * $contentDisposition es. 'attachment; filename="foto.jpg"'.
+     */
+    public function presignGet(string $bucket, string $key, int $expires = 600, ?string $contentDisposition = null): string
+    {
+        [$host, $urlPath, $baseUrl] = $this->resolveEndpoint($bucket, $key);
+
+        $amzDate = gmdate('Ymd\THis\Z');
+        $dateStamp = gmdate('Ymd');
+        $scope = "{$dateStamp}/{$this->region}/s3/aws4_request";
+
+        $params = [
+            'X-Amz-Algorithm' => 'AWS4-HMAC-SHA256',
+            'X-Amz-Credential' => $this->accessKey . '/' . $scope,
+            'X-Amz-Date' => $amzDate,
+            'X-Amz-Expires' => (string) $expires,
+            'X-Amz-SignedHeaders' => 'host',
+        ];
+        if ($this->sessionToken !== null && $this->sessionToken !== '') {
+            $params['X-Amz-Security-Token'] = $this->sessionToken;
+        }
+        if ($contentDisposition !== null && $contentDisposition !== '') {
+            $params['response-content-disposition'] = $contentDisposition;
+        }
+        ksort($params);
+
+        $canonicalQuery = implode('&', array_map(
+            static fn ($k, $v) => rawurlencode($k) . '=' . rawurlencode($v),
+            array_keys($params),
+            array_values($params),
+        ));
+
+        $canonicalRequest = implode("\n", [
+            'GET',
+            $urlPath,
+            $canonicalQuery,
+            'host:' . $host . "\n",
+            'host',
+            'UNSIGNED-PAYLOAD',
+        ]);
+        $stringToSign = implode("\n", [
+            'AWS4-HMAC-SHA256',
+            $amzDate,
+            $scope,
+            hash('sha256', $canonicalRequest),
+        ]);
+        $signature = hash_hmac('sha256', $stringToSign, $this->signingKey($dateStamp), false);
+
+        return $baseUrl . '?' . $canonicalQuery . '&X-Amz-Signature=' . $signature;
+    }
+
+    /**
+     * Scarica un oggetto S3 su file locale in streaming (per il reconciler
+     * thumbnail, quando il file originale non è più in staging).
+     */
+    public function getToFile(string $bucket, string $key, string $dstPath, int $timeout = 120): bool
+    {
+        [$host, $urlPath, $baseUrl] = $this->resolveEndpoint($bucket, $key);
+        if ($this->insecureNonLoopback($baseUrl) !== null) {
+            return false;
+        }
+        $curlHeaders = $this->signedHeaders('GET', $host, $urlPath, hash('sha256', ''), []);
+
+        $fh = fopen($dstPath, 'wb');
+        if ($fh === false) {
+            return false;
+        }
+        $ch = curl_init($baseUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_HTTPHEADER => $curlHeaders,
+            CURLOPT_FILE => $fh,
+            CURLOPT_CONNECTTIMEOUT => 15,
+            CURLOPT_TIMEOUT => $timeout,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+        ]);
+        $ok = curl_exec($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        fclose($fh);
+
+        if ($ok === false || $status < 200 || $status >= 300) {
+            @unlink($dstPath);
+            return false;
+        }
+        return true;
+    }
+
+    /**
      * Costruisce gli header firmati SigV4 per una richiesta.
      * @param array<string,string> $extra header aggiuntivi (lowercase) da firmare
      * @return list<string> header pronti per cURL (Authorization incluso)

@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS photos (
     s3_key            TEXT,                                -- YYYY/MM/DD/{hash}_{name}
     s3_etag           TEXT,
 
+    -- Fase 2: thumbnail/preview locali (cache)
+    thumb_status      TEXT    NOT NULL DEFAULT 'PENDING'
+                      CHECK (thumb_status IN ('PENDING','READY','SKIPPED','ERROR')),
+    thumb_path        TEXT,                                -- percorso locale thumbnail
+    preview_path      TEXT,                                -- percorso locale preview
+
     -- resilienza upload
     upload_attempts   INTEGER NOT NULL DEFAULT 0,
     next_retry_at     TEXT,                                -- ISO8601; backoff esponenziale

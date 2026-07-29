@@ -62,6 +62,15 @@ final class Config
         // pagina di diagnostica (public/health.php)
         public readonly ?string $healthToken,
 
+        // Fase 2 — UI di visualizzazione
+        public readonly string $appEnvName,
+        public readonly string $cacheDir,
+        public readonly int $thumbWidth,
+        public readonly int $previewWidth,
+        public readonly int $presignTtl,
+        public readonly int $cardsPerPage,
+        public readonly int $thumbBatchPerTick,
+
         public readonly bool $debug,
     ) {
     }
@@ -111,6 +120,14 @@ final class Config
 
             healthToken: Env::get('HEALTH_TOKEN'),
 
+            appEnvName: Env::get('APP_ENV_NAME', 'PhotoFacility') ?? 'PhotoFacility',
+            cacheDir: Env::get('CACHE_DIR', $baseDir . '/cache') ?? $baseDir . '/cache',
+            thumbWidth: Env::int('THUMB_WIDTH', 300),
+            previewWidth: Env::int('PREVIEW_WIDTH', 1600),
+            presignTtl: Env::int('PRESIGN_TTL', 600),
+            cardsPerPage: Env::int('CARDS_PER_PAGE', 5),
+            thumbBatchPerTick: Env::int('THUMB_BATCH_PER_TICK', 20),
+
             debug: Env::bool('DEBUG', false),
         );
     }
@@ -153,7 +170,10 @@ final class Config
 
     public function ensureDirectories(): void
     {
-        foreach ([$this->incomingDir, $this->processingDir, $this->failedDir, dirname($this->dbPath)] as $dir) {
+        foreach ([
+            $this->incomingDir, $this->processingDir, $this->failedDir, dirname($this->dbPath),
+            $this->cacheDir . '/thumbs', $this->cacheDir . '/previews',
+        ] as $dir) {
             if (!is_dir($dir)) {
                 @mkdir($dir, 0775, true);
             }

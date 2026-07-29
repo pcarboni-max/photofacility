@@ -152,6 +152,33 @@ $assert(($byName['S3/Connettività'] ?? '') === 'ok', 'Check S3 connettività = 
 $assert(($byName['Database/Integrità (quick_check)'] ?? '') === 'ok', 'Check integrità DB = ok');
 $assert(($byName['Database/Schema'] ?? '') === 'ok', 'Check schema DB = ok');
 
+fwrite(STDOUT, "\n== 6c. Fase 2: thumbnail + galleria ==\n");
+// JPEG VERO (decodificabile da GD), diverso dai fake precedenti
+$realJpeg = "$work/staging/incoming/real.jpg";
+$im = imagecreatetruecolor(800, 600);
+imagefilledrectangle($im, 0, 0, 799, 599, imagecolorallocate($im, 120, 160, 200));
+imagejpeg($im, $realJpeg, 90);
+imagedestroy($im);
+
+$app->runTick(); // ingestione + generazione thumbnail dal file locale
+$rowR = $pdo->query("SELECT * FROM photos WHERE original_filename='real.jpg'")->fetch(PDO::FETCH_ASSOC);
+$assert($rowR !== false, 'Foto reale ingerita');
+$assert(($rowR['thumb_status'] ?? '') === 'READY', 'Thumbnail generata (READY) all\'ingest');
+$assert(!empty($rowR['thumb_path']) && is_file((string) $rowR['thumb_path']), 'File thumbnail creato');
+$assert(!empty($rowR['preview_path']) && is_file((string) $rowR['preview_path']), 'File preview creato');
+$sz = getimagesize((string) $rowR['thumb_path']);
+$assert($sz !== false && max($sz[0], $sz[1]) <= 300, 'Thumbnail ridimensionata a <=300px');
+
+$gallery = \PhotoFacility\Web\Gallery::boot($baseDir);
+$home = $gallery->home(1);
+$assert(count($home['days']) >= 1, 'Home: almeno un giorno con card');
+$dayPhotos = $gallery->day((string) $rowR['partition_date']);
+$assert(count($dayPhotos) >= 1, 'Pagina giorno: foto presenti');
+$dl = $gallery->downloadUrl((int) $rowR['id']);
+$assert(is_string($dl) && str_contains($dl, 'X-Amz-Signature='), 'Download: URL presigned generato');
+$mp = $gallery->mediaPath((int) $rowR['id'], 'preview');
+$assert($mp !== null && is_file($mp), 'mediaPath preview valido');
+
 fwrite(STDOUT, "\n== 7. Validazione HOME_TZ (R5) ==\n");
 putenv('HOME_TZ=Foo/Bar'); // zona inesistente
 $threw = false;

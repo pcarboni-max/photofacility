@@ -235,6 +235,109 @@ final class PhotoRepository
         $stmt->execute([':sp' => $newStagingPath, ':id' => $id]);
     }
 
+    // ---------------------------------------------------------------------
+    // Fase 2: thumbnail
+    // ---------------------------------------------------------------------
+
+    public function setThumb(int $id, string $status, ?string $thumbPath, ?string $previewPath): void
+    {
+        $stmt = $this->pdo->prepare(
+            'UPDATE photos SET thumb_status = :s, thumb_path = :t, preview_path = :p WHERE id = :id'
+        );
+        $stmt->execute([':s' => $status, ':t' => $thumbPath, ':p' => $previewPath, ':id' => $id]);
+    }
+
+    /**
+     * Foto caricate su S3 ma senza thumbnail pronta (da generare/rigenerare).
+     * @return array<int,array<string,mixed>>
+     */
+    public function fetchThumbnailable(int $limit): array
+    {
+        $stmt = $this->pdo->prepare(
+            "SELECT * FROM photos
+             WHERE status = 'UPLOADED_S3' AND thumb_status IN ('PENDING','ERROR')
+             ORDER BY id ASC LIMIT :limit"
+        );
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll();
+    }
+
+    // ---------------------------------------------------------------------
+    // Fase 2: galleria
+    // ---------------------------------------------------------------------
+
+    /** Numero di giornate con almeno una foto caricata (per la paginazione). */
+    public function countDays(): int
+    {
+        return (int) $this->pdo->query(
+            "SELECT COUNT(DISTINCT partition_date) FROM photos WHERE status='UPLOADED_S3'"
+        )->fetchColumn();
+    }
+
+    /**
+     * Giornate (recenti→vecchie) con conteggio, paginabili.
+     * @return array<int,array{partition_date:string, n:int}>
+     */
+    public function listDays(int $limit, int $offset): array
+    {
+        $stmt = $this->pdo->prepare(
+            "SELECT partition_date, COUNT(*) AS n
+             FROM photos WHERE status='UPLOADED_S3'
+             GROUP BY partition_date
+             ORDER BY partition_date DESC
+             LIMIT :limit OFFSET :offset"
+        );
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->execute();
+        return array_map(
+            static fn ($r) => ['partition_date' => (string) $r['partition_date'], 'n' => (int) $r['n']],
+            $stmt->fetchAll()
+        );
+    }
+
+    /**
+     * Foto di una giornata (per lo strip in home o la griglia della pagina giorno).
+     * @return array<int,array<string,mixed>>
+     */
+    public function listByDay(string $date, ?int $limit = null): array
+    {
+        $sql = "SELECT * FROM photos
+                WHERE status='UPLOADED_S3' AND partition_date = :d
+                ORDER BY COALESCE(exif_taken_at, received_at) ASC, id ASC";
+        if ($limit !== null) {
+            $sql .= ' LIMIT :limit';
+        }
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->bindValue(':d', $date);
+        if ($limit !== null) {
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        }
+        $stmt->execute();
+        return $stmt->fetchAll();
+    }
+
+    public function getById(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM photos WHERE id = :id LIMIT 1');
+        $stmt->execute([':id' => $id]);
+        $row = $stmt->fetch();
+        return $row === false ? null : $row;
+    }
+
+    /** @return array<string,string> tag EXIF => valore */
+    public function exifFor(int $photoId): array
+    {
+        $stmt = $this->pdo->prepare('SELECT tag, value FROM photo_exif WHERE photo_id = :id');
+        $stmt->execute([':id' => $photoId]);
+        $out = [];
+        foreach ($stmt->fetchAll() as $r) {
+            $out[(string) $r['tag']] = (string) $r['value'];
+        }
+        return $out;
+    }
+
     /** Pruning dei vecchi eventi per non far crescere la tabella all'infinito. */
     public function pruneEvents(int $days): int
     {

@@ -66,17 +66,33 @@ SigV4, upload, verifica ETag, lock).
 
 ```
 bin/ingest.php        UNICO script del cron (loop-within-cron): ingestione +
-                      upload S3 + manutenzione/backup automatici giornalieri
-public/health.php     diagnostica via web (token, read-only) — l'unica pagina web
+                      upload S3 + thumbnail + manutenzione/backup giornalieri
+public/index.php      UI galleria (Fase 2): home per giorno + pagina giorno
+public/media.php      passthrough thumbnail/preview dalla cache locale
+public/dl.php         download full-res (redirect a URL S3 presigned)
+public/health.php     diagnostica via web (token, read-only)
+public/assets/        CSS + lightbox JS (zero dipendenze)
+src/Web/Gallery.php   logica della UI (dati, EXIF, presigned)
+src/Thumbnail/        generazione thumbnail/preview (GD)
 src/Health/           HealthCheck: diagnostica end-to-end del sistema
 src/Config.php        configurazione da .env (config DB disaccoppiata da S3)
-src/App.php           orchestrazione (loop, reaper, health, alerting, backup)
+src/App.php           orchestrazione (loop, reaper, thumbnail, backup, alerting)
 src/Ingest/           validazione integrità, EXIF, scansione + freno disco pieno
-src/S3/               client S3 SigV4 + uploader con retry/quarantena
-src/Support/          Env, Logger, Lock, Notifier (alerting webhook/email)
+src/S3/               client S3 SigV4 (put/head/presign/get) + uploader
+src/Support/          Env, Logger, Lock, Notifier
 src/Database/         schema access (PDO/SQLite WAL)
 db/schema.sql         DDL (photos + tabelle Fase 2)
 ```
+
+## Fase 2 — interfaccia di visualizzazione
+
+Richiede **`ext-gd`**. UI PHP sul server, immagini su S3.
+
+- **Home** (`index.php`): intestazione (nome ambiente + "torna alla home"), **card per giorno** (`AAAA-MM-GG`, strip di thumbnail, CTA), **5 card/pagina** con paginazione, ordinate dal più recente.
+- **Pagina giorno** (`index.php?day=…`): griglia di thumbnail → **lightbox** con navigazione sequenziale; per ogni foto nome, EXIF principali e **download full-res**.
+- **Thumbnail** (~300px) e **preview** (~1600px) generate solo per JPEG, in cache locale fuori dal webroot, servite da `media.php`. I RAW mostrano un placeholder ma mantengono EXIF e download. Un **reconciler** nel cron garantisce che ogni foto abbia la sua thumbnail (rigenera le mancanti scaricando da S3).
+- **Download**: `dl.php` reindirizza a un **URL S3 presigned** a scadenza breve (i byte non passano dal server).
+- **Sicurezza**: nessun login applicativo → proteggi l'intera UI con la **basic auth** del webserver. Esponi solo `public/`.
 
 ## Diagnostica (via web)
 

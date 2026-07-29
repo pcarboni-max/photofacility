@@ -8,6 +8,7 @@ use PhotoFacility\Config;
 use PhotoFacility\Database\PhotoRepository;
 use PhotoFacility\Support\Logger;
 use PhotoFacility\Support\Notifier;
+use PhotoFacility\Thumbnail\ThumbnailService;
 
 /**
  * Consuma la coda PENDING_S3 e carica i file su S3.
@@ -27,6 +28,7 @@ final class Uploader
         private readonly Config $config,
         private readonly Logger $log,
         private readonly Notifier $notifier,
+        private readonly ThumbnailService $thumbs,
     ) {
     }
 
@@ -90,6 +92,13 @@ final class Uploader
                 $this->repo->markUploaded($id, (string) ($result['etag'] ?? ''), gmdate('Y-m-d H:i:s'));
                 $this->repo->logEvent($id, 'uploaded', 's3://' . $row['s3_bucket'] . '/' . $row['s3_key']);
                 $this->log->info('Upload S3 OK', ['id' => $id, 'key' => $row['s3_key']]);
+
+                // genera thumbnail/preview MENTRE il file è ancora locale (Fase 2)
+                try {
+                    $this->thumbs->processLocal($row, $path);
+                } catch (\Throwable $e) {
+                    $this->log->warn('Thumbnail all\'ingest fallita (riprova il reconciler)', ['id' => $id, 'error' => $e->getMessage()]);
+                }
 
                 if ($this->config->deleteAfterUpload) {
                     if (!@unlink($path)) {

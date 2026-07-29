@@ -38,7 +38,12 @@ interface StorageTarget
      */
     public function headObject(string $bucket, string $key, int $timeout = 15): array;
 
-    // Estensione Fase 2 (NON implementare ora):
-    //   public function presignGet(string $bucket, string $key, int $expiresSeconds): string;
-    //   public function listObjects(string $bucket, string $prefix, ?string $continuationToken): array;
+    /**
+     * URL presigned (SigV4 query-string) per un GET a scadenza breve — download
+     * full-res direttamente da S3, senza far transitare i byte dal server PHP.
+     */
+    public function presignGet(string $bucket, string $key, int $expires = 600, ?string $contentDisposition = null): string;
+
+    /** Scarica un oggetto su file locale in streaming (reconciler thumbnail). */
+    public function getToFile(string $bucket, string $key, string $dstPath, int $timeout = 120): bool;
 }

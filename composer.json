@@ -11,7 +11,8 @@
         "ext-hash": "*"
     },
     "suggest": {
-        "ext-exif": "Estrazione della data di scatto e del modello camera dai metadati EXIF."
+        "ext-exif": "Estrazione della data di scatto e del modello camera dai metadati EXIF.",
+        "ext-gd": "Generazione di thumbnail e preview per l'interfaccia di visualizzazione (Fase 2)."
     },
     "autoload": {
         "psr-4": {

@@ -8,6 +8,9 @@
 /db/*.log
 /db/*.lock
 
+# cache locale di thumbnail/preview (rigenerabile)
+/cache/
+
 # file transitori in staging (le foto NON vanno versionate)
 /staging/incoming/*
 /staging/processing/*

@@ -12,6 +12,8 @@ use PhotoFacility\Ingest\IntegrityValidator;
 use PhotoFacility\S3\S3Client;
 use PhotoFacility\S3\StorageTarget;
 use PhotoFacility\S3\Uploader;
+use PhotoFacility\Thumbnail\ThumbnailGenerator;
+use PhotoFacility\Thumbnail\ThumbnailService;
 use PhotoFacility\Support\Lock;
 use PhotoFacility\Support\Logger;
 use PhotoFacility\Support\Notifier;
@@ -67,6 +69,32 @@ final class App
             $this->db->migrate($this->config->baseDir . '/db/schema.sql');
             $this->log->info('Schema DB creato automaticamente al primo avvio.');
         }
+        $this->ensureColumns();
+    }
+
+    /** Micro-migrazione idempotente: aggiunge le colonne Fase 2 ai DB esistenti. */
+    private function ensureColumns(): void
+    {
+        $cols = [];
+        foreach ($this->db->pdo()->query('PRAGMA table_info(photos)') as $r) {
+            $cols[$r['name']] = true;
+        }
+        $adds = [];
+        if (!isset($cols['thumb_status'])) {
+            $adds[] = "ALTER TABLE photos ADD COLUMN thumb_status TEXT NOT NULL DEFAULT 'PENDING'";
+        }
+        if (!isset($cols['thumb_path'])) {
+            $adds[] = 'ALTER TABLE photos ADD COLUMN thumb_path TEXT';
+        }
+        if (!isset($cols['preview_path'])) {
+            $adds[] = 'ALTER TABLE photos ADD COLUMN preview_path TEXT';
+        }
+        foreach ($adds as $sql) {
+            $this->db->pdo()->exec($sql);
+        }
+        if ($adds !== []) {
+            $this->log->info('Migrazione colonne Fase 2 applicata', ['n' => count($adds)]);
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -90,7 +118,7 @@ final class App
 
         try {
             $this->config->requireS3();
-            [$ingestor, $uploader, $client] = $this->buildWorkers();
+            [$ingestor, $uploader, $client, $thumbs] = $this->buildWorkers();
             $this->reapStuckUploads($client);
 
             $totals = ['admitted' => 0, 'skipped' => 0, 'failed' => 0, 'uploaded' => 0, 'iterations' => 0, 'disk_low' => false];
@@ -112,6 +140,7 @@ final class App
                 usleep($work > 0 ? 200_000 : 3_000_000);
             }
 
+            $this->reconcileThumbnails($client, $thumbs);
             $this->cleanupStaging();
             $this->runDailyMaintenanceIfDue();
             $this->postCycle($totals);
@@ -141,10 +170,11 @@ final class App
 
         try {
             $this->config->requireS3();
-            [$ingestor, $uploader, $client] = $this->buildWorkers();
+            [$ingestor, $uploader, $client, $thumbs] = $this->buildWorkers();
             $this->reapStuckUploads($client);
 
             $pass = $this->runPass($ingestor, $uploader, $deadline);
+            $this->reconcileThumbnails($client, $thumbs);
             $this->cleanupStaging();
             $this->postCycle([
                 'admitted' => $pass['ingest']['admitted'],
@@ -170,7 +200,7 @@ final class App
         return ['ingest' => $ingest, 'upload' => $upload];
     }
 
-    /** @return array{0:Ingestor,1:Uploader,2:S3Client} */
+    /** @return array{0:Ingestor,1:Uploader,2:S3Client,3:ThumbnailService} */
     private function buildWorkers(): array
     {
         $client = new S3Client(
@@ -181,6 +211,7 @@ final class App
             usePathStyle: $this->config->s3PathStyle,
             sessionToken: $this->config->awsSessionToken,
         );
+        $thumbs = new ThumbnailService($this->config, $this->repo, new ThumbnailGenerator(), $this->log);
         $ingestor = new Ingestor(
             $this->config,
             $this->repo,
@@ -188,8 +219,33 @@ final class App
             new ExifExtractor($this->config->homeTz),
             $this->log,
         );
-        $uploader = new Uploader($client, $this->repo, $this->config, $this->log, $this->notifier);
-        return [$ingestor, $uploader, $client];
+        $uploader = new Uploader($client, $this->repo, $this->config, $this->log, $this->notifier, $thumbs);
+        return [$ingestor, $uploader, $client, $thumbs];
+    }
+
+    /**
+     * Garantisce che ogni foto su S3 abbia la sua thumbnail: genera quelle
+     * mancanti (PENDING) o fallite (ERROR) scaricando il full da S3. Batch
+     * limitato per tick. I formati non-preview vengono marcati SKIPPED.
+     */
+    private function reconcileThumbnails(StorageTarget $client, ThumbnailService $thumbs): void
+    {
+        $rows = $this->repo->fetchThumbnailable($this->config->thumbBatchPerTick);
+        foreach ($rows as $row) {
+            $id = (int) $row['id'];
+            if (!$thumbs->isPreviewable((string) $row['mime_detected'])) {
+                $this->repo->setThumb($id, 'SKIPPED', null, null);
+                continue;
+            }
+            $tmp = $this->config->cacheDir . '/_dl_' . $row['uuid'] . '.tmp';
+            if ($client->getToFile((string) $row['s3_bucket'], (string) $row['s3_key'], $tmp)) {
+                $thumbs->processLocal($row, $tmp);
+                @unlink($tmp);
+            } else {
+                $this->repo->setThumb($id, 'ERROR', null, null);
+                $this->log->warn('Reconciler thumbnail: download da S3 fallito', ['id' => $id]);
+            }
+        }
     }
 
     /**

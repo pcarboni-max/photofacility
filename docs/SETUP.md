@@ -141,3 +141,16 @@ Test sul campo consigliato: scatta e invia una foto dalla Canon, poi **simula un
 Wi-Fi** spegnendo l'access point durante l'invio. Verifica che il file parziale NON venga
 caricato su S3 (finisce in `staging/failed/` o resta in attesa) e che, al ritentativo della
 camera, la foto arrivi correttamente senza duplicati.
+
+## 9. Interfaccia di visualizzazione (Fase 2)
+
+Richiede l'estensione **`ext-gd`** (`php -m | grep -i gd`) per generare le anteprime.
+
+- Configura in `.env`: `APP_ENV_NAME` (nome mostrato in intestazione) e, se vuoi, `THUMB_WIDTH`,
+  `PREVIEW_WIDTH`, `PRESIGN_TTL`, `CARDS_PER_PAGE`. Le anteprime vanno in `CACHE_DIR`
+  (default `<progetto>/cache`, **fuori dal webroot**).
+- La UI è servita da `public/` (`index.php`, `media.php`, `dl.php`): esponi **solo `public/`**.
+- **Non c'è login applicativo**: proteggi l'intera UI con la **basic auth del webserver** (le
+  foto sono private). Consigliato anche HTTPS.
+- Le thumbnail si generano da sole: all'ingest per i nuovi JPEG e, per eventuali mancanti, via
+  reconciler nel cron. I RAW non hanno anteprima (placeholder) ma mantengono EXIF e download.
